@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["http://localhost:3000", "https://your-nextjs-app-*.a.run.app"],
+    "method": ["PUT", "GET"],
+    "responseHeader": ["Content-Type", "Content-Length", "x-goog-meta-originalfilename"],
+    "maxAgeSeconds": 3600
+  }
+]     

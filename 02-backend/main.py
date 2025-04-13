@@ -1,23 +1,33 @@
 # main.py
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, BackgroundTasks, status, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
-from google.cloud import firestore
+from google.cloud import firestore, storage
 import os
 import uuid
 import re
 from typing import List, Dict, Any
+import datetime
+from dotenv import load_dotenv # Import load_dotenv
+import base64 # Added for decoding Pub/Sub message
+import json   # Added for parsing decoded message
+import uvicorn
+
+# Load environment variables from .env file
+load_dotenv()
 
 # --- Configuration ---
-PROJECT_ID = os.environ.get("GCP_PROJECT") # Make sure this env var is set
-LOCATION = "us-central1" # Or your preferred location
-MODEL_NAME_EXTRACTION = "gemini-1.5-flash-001" # Use Flash for potentially faster/cheaper extraction/summarization
-MODEL_NAME_SUMMARIZATION = "gemini-1.5-flash-001"
-MODEL_NAME_GENERATION = "gemini-1.5-pro-preview-0409" # Use Pro for better final answers
-MAX_SUMMARY_TOKENS = 100 # Limit summary length
-MAX_CHUNKS_FOR_CONTEXT = 5 # Limit number of chunks sent to final LLM
+# Now os.environ.get will first look for variables loaded from .env
+PROJECT_ID = os.environ.get("GCP_PROJECT")
+LOCATION = os.environ.get("GCP_LOCATION") # Add default if not in .env
+MODEL_NAME_EXTRACTION = os.environ.get("MODEL_NAME_EXTRACTION")
+MODEL_NAME_SUMMARIZATION = os.environ.get("MODEL_NAME_SUMMARIZATION")
+MODEL_NAME_GENERATION = os.environ.get("MODEL_NAME_GENERATION")
+MAX_SUMMARY_TOKENS = int(os.environ.get("MAX_SUMMARY_TOKENS", 100)) # Convert to int
+MAX_CHUNKS_FOR_CONTEXT = int(os.environ.get("MAX_CHUNKS_FOR_CONTEXT", 5)) # Convert to int
 
 # --- Initialization ---
 try:
@@ -38,7 +48,29 @@ except Exception as e:
     model_generation = None
 
 
-app = FastAPI(title="Chat with PDF API")
+app = FastAPI(
+    title="Knowledge Base API",
+    description="API for managing and querying knowledge base documents.",
+    version="0.1.0"
+)
+
+# --- CORS Configuration ---
+# Define allowed origins (replace with your frontend URL in production)
+origins = [
+    "http://localhost:3000", # Your Next.js frontend development URL
+    # Add your deployed frontend URL here if applicable
+    # e.g., "https://your-frontend-app-url.com"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # List of allowed origins
+    allow_credentials=True, # Allow cookies/authorization headers
+    allow_methods=["*"],    # Allow all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],    # Allow all headers
+)
+# --- End CORS Configuration ---
+
 
 # --- Pydantic Models ---
 class ProcessPdfRequest(BaseModel):
@@ -60,6 +92,32 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     retrieved_chunks: List[ChunkData] # Return the chunks used for context
+
+class DocumentListItem(BaseModel):
+    id: str
+    name: str # Use 'name' for consistency (will be title for text)
+    type: str # Will be 'Document' or 'Pasted Text'
+    fileType: str | None = None # Extract from name if possible for 'Document'
+    dateAdded: str # Format as YYYY-MM-DD string
+    status: str # e.g., 'Processing', 'Ready', 'Error'
+    gcsUri: str | None = None # Optional
+
+# --- Models for Pub/Sub Eventarc Trigger ---
+class PubSubMessage(BaseModel):
+    data: str # Base64-encoded data
+    messageId: str | None = None
+    publishTime: str | None = None
+    attributes: Dict[str, str] | None = None # Include attributes if needed
+
+class PubSubRequest(BaseModel):
+    message: PubSubMessage
+    subscription: str | None = None # Subscription name
+
+class GcsEventData(BaseModel):
+    """Structure within the decoded Pub/Sub message data for GCS events"""
+    bucket: str
+    name: str # File path within the bucket
+    # Add other fields if needed, e.g., contentType, timeCreated, updated
 
 
 # --- Helper Functions ---
@@ -112,42 +170,77 @@ async def summarize_chunk(chunk_text: str) -> str:
         # Decide how to handle summarization errors - return empty string, specific error message?
         return "Error during summarization." # Or return ""
 
-def store_chunks_in_firestore(doc_id: str, original_filename: str, chunks_with_summaries: List[Dict[str, Any]]):
-    """Stores document metadata and chunk data in Firestore."""
+def store_chunks_in_firestore(doc_id: str, source_name: str, document_type: str, chunks_with_summaries: List[Dict[str, Any]], gcs_uri: str | None = None, initial_status: str = "Processing"):
+    """
+    Stores document metadata in 'documents' collection and chunk data
+    in a 'chunks' subcollection under the corresponding document.
+    Handles both PDF uploads (with gcs_uri) and pasted text (without gcs_uri).
+    """
     if not db:
         raise HTTPException(status_code=500, detail="Firestore not initialized")
     try:
-        # Store document metadata
-        doc_ref = db.collection("documents").document(doc_id)
-        doc_ref.set({
-            "original_filename": original_filename,
-            "processed_timestamp": firestore.SERVER_TIMESTAMP,
-            "chunk_count": len(chunks_with_summaries)
-        })
+        # Prepare document metadata
+        doc_data = {
+            "source_name": source_name, # Use a generic name field
+            "document_type": document_type, # Store 'PDF' or 'TEXT'
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "chunk_count": len(chunks_with_summaries),
+            "status": initial_status
+        }
+        if gcs_uri: # Only add gcs_uri if it exists
+            doc_data["gcs_uri"] = gcs_uri
 
-        # Store each chunk
-        batch = db.batch()
-        chunks_collection = db.collection("chunks")
-        for item in chunks_with_summaries:
-            chunk_doc_ref = chunks_collection.document(item["chunk_id"])
-            batch.set(chunk_doc_ref, item)
-        batch.commit()
-        print(f"Stored {len(chunks_with_summaries)} chunks for doc_id: {doc_id}")
+        # Store document metadata (or update if exists)
+        doc_ref = db.collection("documents").document(doc_id)
+        doc_ref.set(doc_data, merge=True) # Use merge=True
+
+        # Store each chunk in the 'chunks' subcollection if summaries are provided
+        if chunks_with_summaries:
+            batch = db.batch()
+            chunks_subcollection_ref = doc_ref.collection("chunks")
+            for item in chunks_with_summaries:
+                chunk_doc_ref = chunks_subcollection_ref.document(f"chunk_{item['chunk_order']}")
+                chunk_data_to_store = {
+                    "chunk_text": item["chunk_text"],
+                    "summary": item["summary"],
+                    "chunk_order": item["chunk_order"]
+                }
+                batch.set(chunk_doc_ref, chunk_data_to_store)
+
+            batch.commit()
+            print(f"Stored {len(chunks_with_summaries)} chunks in subcollection for doc_id: {doc_id}")
+
+            # Update status to 'Ready' after successful chunk storage
+            doc_ref.update({"status": "Ready"})
+            print(f"Updated status to 'Ready' for doc_id: {doc_id}")
+        # If there were no chunks (e.g., empty text), mark as Ready immediately
+        elif not chunks_with_summaries:
+             doc_ref.update({"status": "Ready", "chunk_count": 0})
+             print(f"Marked doc_id {doc_id} as 'Ready' (no chunks).")
+
+
     except Exception as e:
-        print(f"Error storing data in Firestore: {e}")
+        print(f"Error storing data in Firestore for doc_id {doc_id}: {e}")
+        # Attempt to update status to 'Error' if storing fails
+        try:
+            doc_ref = db.collection("documents").document(doc_id) # Ensure doc_ref is defined
+            doc_ref.update({"status": "Error"})
+        except Exception as update_e:
+             print(f"Failed to update status to 'Error' for doc_id {doc_id}: {update_e}")
         raise HTTPException(status_code=500, detail=f"Failed to store data in Firestore: {e}")
 
 def search_summaries_keyword(query: str) -> List[Dict[str, Any]]:
     """
-    Performs a basic keyword search across all chunk summaries in Firestore.
-    WARNING: This is INEFFICIENT for large datasets as it fetches ALL chunks.
+    Performs a basic keyword search across all chunk summaries in Firestore
+    using a Collection Group query on the 'chunks' subcollections.
+    WARNING: This is INEFFICIENT for large datasets as it fetches ALL chunks
+             from ALL documents. Consider a dedicated search solution for production.
     """
     if not db:
         raise HTTPException(status_code=500, detail="Firestore not initialized")
 
     try:
-        # Basic keyword extraction (split query into words, lowercase, remove common words)
-        # Consider a more robust keyword extraction method
+        # Basic keyword extraction (same as before)
         stopwords = set(["a", "an", "the", "is", "in", "it", "of", "for", "on", "with"])
         keywords = [word for word in re.findall(r'\b\w+\b', query.lower()) if word not in stopwords]
 
@@ -155,32 +248,45 @@ def search_summaries_keyword(query: str) -> List[Dict[str, Any]]:
             return [] # No keywords to search
 
         relevant_chunks = []
-        chunks_ref = db.collection("chunks").stream() # Fetches ALL chunks!
+        # Use collection_group to query across all 'chunks' subcollections
+        # NOTE: This might require creating a Collection Group index in Firestore.
+        # Check your backend logs for a link if you get permission errors on first run.
+        chunks_stream = db.collection_group("chunks").stream()
 
-        for chunk_doc in chunks_ref:
+        for chunk_doc in chunks_stream:
             chunk_data = chunk_doc.to_dict()
             summary_lower = chunk_data.get("summary", "").lower()
-            chunk_text_lower = chunk_data.get("chunk_text", "").lower() # Also check original text? Maybe optional.
+            chunk_text_lower = chunk_data.get("chunk_text", "").lower()
 
-            # Score based on keyword presence in summary (or chunk text)
+            # Score based on keyword presence (same as before)
             score = 0
             matched_keywords = set()
             for keyword in keywords:
-                 # Search in summary first
                 if keyword in summary_lower:
-                    score += 2 # Higher score for summary match
+                    score += 2
                     matched_keywords.add(keyword)
-                 # Optional: Search in chunk text if not found in summary
                 elif keyword in chunk_text_lower:
                      score += 1
                      matched_keywords.add(keyword)
 
             if score > 0:
-                chunk_data_with_score = {**chunk_data, "score": score, "matched_keywords": list(matched_keywords)}
-                # Ensure necessary fields are present for later use
-                chunk_data_with_score['chunk_id'] = chunk_doc.id
-                if 'doc_id' not in chunk_data_with_score: # Ensure doc_id is present
-                   chunk_data_with_score['doc_id'] = chunk_data.get('doc_id', 'unknown') # Handle potential missing field
+                # --- Get the parent document ID (doc_id) ---
+                # The parent of a chunk document in the subcollection is the document reference
+                parent_doc_ref = chunk_doc.reference.parent.parent
+                if not parent_doc_ref:
+                     print(f"Warning: Could not get parent document for chunk {chunk_doc.id}")
+                     continue # Skip this chunk if we can't identify its parent document
+                doc_id = parent_doc_ref.id
+                # ---
+
+                chunk_data_with_score = {
+                    **chunk_data,
+                    "score": score,
+                    "matched_keywords": list(matched_keywords),
+                    # Add doc_id and a unique chunk_id for the response model
+                    "doc_id": doc_id,
+                    "chunk_id": f"{doc_id}_{chunk_doc.id}" # Reconstruct a unique ID for response if needed
+                }
                 relevant_chunks.append(chunk_data_with_score)
 
 
@@ -192,7 +298,11 @@ def search_summaries_keyword(query: str) -> List[Dict[str, Any]]:
 
     except Exception as e:
         print(f"Error searching summaries in Firestore: {e}")
-        # Depending on the error, you might want to return [] or raise an exception
+        # Check if the error is related to needing an index
+        if "requires an index" in str(e):
+             print(">>> Firestore Index Required <<<")
+             print("Please check the backend logs for a URL to create the necessary Firestore index for the collection group query.")
+             raise HTTPException(status_code=500, detail=f"Firestore index required for collection group query. Check backend logs. Original error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to search summaries: {e}")
 
 
@@ -234,64 +344,117 @@ Answer:
         raise HTTPException(status_code=500, detail=f"Failed to generate answer: {e}")
 
 
-# --- API Endpoints ---
+# --- Core Processing Logic ---
 
-@app.post("/process-pdf", status_code=202) # 202 Accepted as processing is async
-async def process_pdf_endpoint(request: ProcessPdfRequest):
+async def process_uploaded_pdf(doc_id: str, gcs_uri: str, original_filename: str):
     """
-    Endpoint to trigger the processing of a PDF file stored in GCS.
+    Core logic to process a PDF from GCS: extract, chunk, summarize, store.
+    Chunks are stored in a subcollection under the document.
+    Updates document status in Firestore.
     """
     if not db or not model_extraction or not model_summarization:
-         raise HTTPException(status_code=500, detail="Backend services not fully initialized.")
+        print("Error: Backend services not fully initialized.")
+        try:
+            doc_ref = db.collection("documents").document(doc_id)
+            # Use source_name consistently
+            doc_ref.set({"status": "Error", "source_name": original_filename, "gcs_uri": gcs_uri, "document_type": "PDF"}, merge=True)
+        except Exception as e:
+            print(f"Failed to mark doc {doc_id} as Error during service init failure: {e}")
+        raise RuntimeError("Backend services not fully initialized.")
 
-    print(f"Received request to process GCS URI: {request.gcs_uri}")
-    doc_id = str(uuid.uuid4()) # Generate a unique ID for this document
+    print(f"Starting processing for doc_id: {doc_id}, GCS URI: {gcs_uri}")
+    doc_ref = db.collection("documents").document(doc_id)
 
     try:
-        # 1. Extract Text
-        print(f"Extracting text from {request.gcs_uri}...")
-        full_text = await extract_text_from_pdf_gemini(request.gcs_uri)
-        if not full_text:
-             raise HTTPException(status_code=400, detail="Could not extract text from PDF.")
-        print(f"Extracted text length: {len(full_text)} characters.")
+        # 0. Set initial status in Firestore
+        print(f"Setting initial status 'Processing' for doc_id: {doc_id}")
+        doc_ref.set({
+            "source_name": original_filename, # Use source_name
+            "document_type": "PDF", # Specify type
+            "gcs_uri": gcs_uri,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "status": "Processing"
+        }, merge=True)
 
+        # 1. Extract Text
+        print(f"Extracting text from {gcs_uri}...")
+        full_text = await extract_text_from_pdf_gemini(gcs_uri)
+        if not full_text:
+            raise ValueError("Could not extract text from PDF.") # Use ValueError or custom exception
+        print(f"Extracted text length: {len(full_text)} characters for doc_id: {doc_id}.")
 
         # 2. Chunk Text
-        print("Chunking text...")
+        print(f"Chunking text for doc_id: {doc_id}...")
         text_chunks = chunk_text(full_text) # Use your preferred chunking strategy
-        print(f"Created {len(text_chunks)} chunks.")
-
+        print(f"Created {len(text_chunks)} chunks for doc_id: {doc_id}.")
 
         # 3. Summarize Chunks and Prepare for Firestore
         chunks_to_store = []
-        print("Summarizing chunks...")
+        print(f"Summarizing chunks for doc_id: {doc_id}...")
         for i, chunk in enumerate(text_chunks):
-            chunk_id = f"{doc_id}_chunk_{i}"
             summary = await summarize_chunk(chunk)
             chunks_to_store.append({
-                "chunk_id": chunk_id,
-                "doc_id": doc_id,
                 "chunk_text": chunk,
                 "summary": summary,
                 "chunk_order": i
             })
-            print(f"  Summarized chunk {i+1}/{len(text_chunks)}")
+            if (i + 1) % 10 == 0: # Log progress periodically
+                 print(f"  Summarized chunk {i+1}/{len(text_chunks)} for doc_id: {doc_id}")
 
+        # 4. Store in Firestore (uses the updated store_chunks_in_firestore)
+        print(f"Storing {len(chunks_to_store)} chunks in Firestore subcollection for doc_id: {doc_id}...")
+        # Pass 'PDF' as document_type, original_filename as source_name, and the gcs_uri
+        store_chunks_in_firestore(doc_id, original_filename, "PDF", chunks_to_store, gcs_uri=gcs_uri, initial_status="Processing")
 
-        # 4. Store in Firestore
-        print(f"Storing {len(chunks_to_store)} chunks in Firestore for doc_id: {doc_id}...")
-        store_chunks_in_firestore(doc_id, request.original_filename, chunks_to_store)
+        print(f"Successfully processed and stored document: {doc_id}")
 
-
-        return {"message": "PDF processing started successfully.", "doc_id": doc_id}
-
-    except HTTPException as http_exc:
-         # Re-raise HTTP exceptions directly
-         raise http_exc
     except Exception as e:
-        print(f"Unhandled error during PDF processing for {request.gcs_uri}: {e}")
-        # Log the full error details here
-        raise HTTPException(status_code=500, detail=f"Internal server error during PDF processing: {e}")
+        print(f"Error during PDF processing for doc_id {doc_id} ({gcs_uri}): {e}")
+        # Update status to 'Error' in Firestore
+        try:
+            doc_ref.update({"status": "Error"})
+            print(f"Updated status to 'Error' for doc_id: {doc_id}")
+        except Exception as update_e:
+            print(f"Failed to update status to 'Error' for doc_id {doc_id} after processing error: {update_e}")
+        # Re-raise the exception so the caller (HTTP endpoint or GCS handler) knows it failed
+        raise e
+
+
+# --- API Endpoints ---
+
+@app.post("/process-pdf", status_code=status.HTTP_202_ACCEPTED) # Use status constant
+async def process_pdf_endpoint(request: ProcessPdfRequest, background_tasks: BackgroundTasks): # Add BackgroundTasks
+    """
+    HTTP Endpoint to manually trigger the processing of a PDF file stored in GCS.
+    Generates a doc_id and adds the processing task to the background.
+    """
+    print(f"Received HTTP request to process GCS URI: {request.gcs_uri}")
+    doc_id = str(uuid.uuid4()) # Generate a unique ID for this document
+
+    try:
+        # Use BackgroundTasks for more reliable background execution in FastAPI/Cloud Run
+        print(f"Adding processing task to background for doc_id: {doc_id} via HTTP endpoint.")
+        background_tasks.add_task(process_uploaded_pdf, doc_id, request.gcs_uri, request.original_filename)
+
+        # Immediately return 202
+        return {"message": "PDF processing accepted.", "doc_id": doc_id}
+
+    except Exception as e:
+        # This catch block handles errors during task *submission*
+        print(f"Error initiating PDF processing for {request.gcs_uri} via HTTP: {e}")
+        # Attempt to mark as error if we know the doc_id (though task might not have started)
+        if doc_id and db:
+             try:
+                 db.collection("documents").document(doc_id).set({
+                     "status": "Error",
+                     "source_name": request.original_filename,
+                     "gcs_uri": request.gcs_uri,
+                     "timestamp": firestore.SERVER_TIMESTAMP,
+                     "error_message": f"Failed to initiate processing: {e}"
+                 }, merge=True)
+             except Exception as update_e:
+                 print(f"Failed to mark doc {doc_id} as Error during HTTP initiation failure: {update_e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to initiate PDF processing: {e}")
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -330,10 +493,294 @@ async def query_endpoint(request: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error during query processing: {e}")
 
 
-# --- To run locally (for development) ---
+@app.get("/documents", response_model=list[DocumentListItem])
+async def get_documents():
+    """
+    Retrieves a list of processed documents (PDFs and Text) from Firestore.
+    Includes document status.
+    """
+    if not db:
+        raise HTTPException(status_code=500, detail="Firestore not initialized")
+
+    try:
+        docs_ref = db.collection('documents').order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
+
+        documents_list = []
+        for doc in docs_ref:
+            doc_data = doc.to_dict()
+            doc_id = doc.id
+
+            doc_type = doc_data.get('document_type', 'Unknown') # Get the type
+            source_name = doc_data.get('source_name', 'Untitled') # Get the source name
+
+            file_type_display = None
+            item_type_display = "Unknown"
+
+            if doc_type == "PDF":
+                item_type_display = "Document"
+                if '.' in source_name:
+                    file_type_display = source_name.split('.')[-1].upper()
+            elif doc_type == "TEXT":
+                item_type_display = "Pasted Text"
+                # file_type_display remains None
+
+            # Format timestamp
+            timestamp = doc_data.get('timestamp')
+            date_added_str = "Unknown"
+            if isinstance(timestamp, datetime.datetime):
+                 date_added_str = timestamp.strftime('%Y-%m-%d')
+            elif isinstance(timestamp, str):
+                 try:
+                     date_added_str = datetime.datetime.fromisoformat(timestamp.replace('Z', '+00:00')).strftime('%Y-%m-%d')
+                 except ValueError:
+                     date_added_str = timestamp
+
+            item = DocumentListItem(
+                id=doc_id,
+                name=source_name, # Use source_name for display
+                type=item_type_display, # Use the determined display type
+                fileType=file_type_display, # Use determined file type (or None)
+                dateAdded=date_added_str,
+                status=doc_data.get('status', 'Unknown'),
+                gcsUri=doc_data.get('gcs_uri') # Get GCS URI (will be None for text)
+            )
+            documents_list.append(item)
+
+        return documents_list
+    except Exception as e:
+        print(f"Error fetching documents from Firestore: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch documents: {e}")
+
+
+# --- Eventarc GCS Trigger Endpoint ---
+
+@app.post("/event/gcs", status_code=status.HTTP_200_OK)
+async def handle_gcs_event_pubsub(request: PubSubRequest, background_tasks: BackgroundTasks):
+    """
+    Endpoint to receive GCS change notifications via Pub/Sub messages from Eventarc.
+    Decodes the message, extracts file details, determines file type,
+    and triggers the appropriate processing task (PDF or Text).
+    """
+    print(f"Received Pub/Sub message: {request.message.messageId}")
+
+    if not request.message or not request.message.data:
+        print("Error: Received empty message or message data.")
+        # Return 2xx so Pub/Sub doesn't retry, but log the error.
+        # Consider returning 400 if the format is definitively wrong.
+        return {"status": "error", "message": "Empty message data received"}
+
+    try:
+        # Decode the base64-encoded message data
+        decoded_data = base64.b64decode(request.message.data).decode('utf-8')
+        print(f"Decoded message data: {decoded_data}")
+        event_data_dict = json.loads(decoded_data)
+        event_data = GcsEventData(**event_data_dict)
+
+        bucket_name = event_data.bucket
+        file_name = event_data.name # This is the object name (e.g., uploads/uuid-filename.pdf)
+        gcs_uri = f"gs://{bucket_name}/{file_name}"
+
+        # --- Get original filename (Attempt from metadata first, then fallback) ---
+        original_filename = "Unknown Filename" # Default
+        try:
+            # Initialize storage client if not already done globally or passed in
+            storage_client = storage.Client()
+            blob = storage_client.bucket(bucket_name).get_blob(file_name)
+            if blob and blob.metadata and 'originalfilename' in blob.metadata:
+               original_filename = blob.metadata['originalfilename']
+               print(f"Retrieved original filename from metadata: {original_filename}")
+            else:
+               # Fallback extraction from object name
+               print(f"Warning: Could not retrieve 'originalfilename' metadata for {file_name}. Falling back to object name parsing.")
+               base_name = os.path.basename(file_name)
+               parts = base_name.split('-', 1) # Assumes 'uuid-original_filename.ext'
+               if len(parts) > 1:
+                   original_filename = parts[1]
+               else: # If no UUID prefix, use the whole name
+                   original_filename = base_name
+               print(f"Using fallback original filename: {original_filename}")
+
+        except Exception as meta_e:
+             print(f"Error retrieving metadata for {file_name}, using fallback: {meta_e}")
+             # Fallback extraction from object name (repeat in case of error)
+             base_name = os.path.basename(file_name)
+             parts = base_name.split('-', 1)
+             if len(parts) > 1:
+                 original_filename = parts[1]
+             else:
+                 original_filename = base_name
+             print(f"Using fallback original filename after error: {original_filename}")
+        # --- End Original Filename Retrieval ---
+
+
+        # Generate a unique ID for the document
+        doc_id = str(uuid.uuid4())
+
+        print(f"GCS event triggered processing for: {gcs_uri}")
+        print(f"Generated document ID: {doc_id}")
+        print(f"Using original filename: {original_filename}")
+
+        # --- Determine file type and choose processing function ---
+        lower_filename = file_name.lower()
+        if lower_filename.endswith('.pdf'):
+            print(f"Detected PDF file. Adding PDF processing task for doc_id: {doc_id}")
+            background_tasks.add_task(process_uploaded_pdf, doc_id, gcs_uri, original_filename)
+        elif lower_filename.endswith('.txt'): # Assuming pasted text is saved as .txt
+            print(f"Detected TXT file. Adding Text processing task for doc_id: {doc_id}")
+            background_tasks.add_task(process_uploaded_text, doc_id, gcs_uri, original_filename)
+        # Add elif for .docx, etc. if you implement extraction for them
+        # elif lower_filename.endswith('.docx'):
+        #     print(f"Detected DOCX file. Adding DOCX processing task for doc_id: {doc_id}")
+        #     background_tasks.add_task(process_uploaded_docx, doc_id, gcs_uri, original_filename) # Example
+        else:
+            print(f"Ignoring unsupported file type: {file_name}")
+            # Mark as error in Firestore immediately? Or just ignore.
+            # Let's mark it as an error for visibility.
+            try:
+                if db:
+                    db.collection("documents").document(doc_id).set({
+                        "source_name": original_filename,
+                        "document_type": "UNSUPPORTED",
+                        "gcs_uri": gcs_uri,
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "status": "Error",
+                        "error_message": f"Unsupported file type: {os.path.splitext(original_filename)[1]}"
+                    }, merge=True)
+            except Exception as db_e:
+                 print(f"Failed to mark unsupported file {doc_id} as Error in Firestore: {db_e}")
+            # Return success to Pub/Sub so it doesn't retry
+            return {"status": "ignored", "message": "Unsupported file type"}
+        # --- End File Type Determination ---
+
+        # Acknowledge the Pub/Sub message
+        return {"status": "success", "message": "Processing initiated", "doc_id": doc_id}
+
+    except json.JSONDecodeError as e:
+        print(f"Error decoding Pub/Sub message data JSON: {e}")
+        # Don't retry bad format
+        return {"status": "error", "message": f"Invalid JSON in message data: {e}"}, 400
+    except Exception as e:
+        print(f"Error processing GCS event message {request.message.messageId}: {e}")
+        # Let background task handle retries if applicable, but acknowledge message receipt
+        # Or return 500 to potentially trigger Pub/Sub retries if the error is transient
+        # For now, return 500 to indicate failure to *initiate* processing
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to process GCS event: {e}")
+
+
+# --- Add Helper Function ---
+async def read_text_from_gcs(gcs_uri: str) -> str:
+    """Downloads and reads text content from a GCS file."""
+    try:
+        # Parse GCS URI
+        if not gcs_uri.startswith("gs://"):
+            raise ValueError("Invalid GCS URI format. Must start with gs://")
+        parts = gcs_uri[5:].split("/", 1)
+        if len(parts) != 2:
+            raise ValueError("Invalid GCS URI format. Must be gs://bucket_name/object_name")
+        bucket_name, object_name = parts
+
+        # Download the blob as bytes and decode
+        storage_client = storage.Client() # Reuse client if possible, or initialize
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+
+        print(f"Attempting to download text from: {gcs_uri}")
+        content_bytes = await blob.download_as_bytes() # Use async download
+        print(f"Downloaded {len(content_bytes)} bytes from {gcs_uri}")
+
+        # Decode assuming UTF-8, handle potential errors
+        try:
+            content_text = content_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            print(f"Warning: Could not decode {gcs_uri} as UTF-8. Trying latin-1.")
+            content_text = content_bytes.decode('latin-1') # Fallback encoding
+
+        return content_text
+
+    except Exception as e:
+        print(f"Error reading text from GCS URI {gcs_uri}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read text content from GCS: {e}")
+
+
+# --- Create Text Processing Function ---
+async def process_uploaded_text(doc_id: str, gcs_uri: str, original_filename: str):
+    """
+    Core logic to process a text file from GCS: read, chunk, summarize, store.
+    Chunks are stored in a subcollection under the document.
+    Updates document status in Firestore.
+    """
+    if not db or not model_summarization: # Only summarization model needed here
+        print("Error: Backend services (Firestore/Summarization) not fully initialized.")
+        try:
+            doc_ref = db.collection("documents").document(doc_id)
+            doc_ref.set({"status": "Error", "source_name": original_filename, "gcs_uri": gcs_uri, "document_type": "TEXT"}, merge=True)
+        except Exception as e:
+            print(f"Failed to mark doc {doc_id} as Error during service init failure: {e}")
+        raise RuntimeError("Backend services not fully initialized.")
+
+    print(f"Starting TEXT processing for doc_id: {doc_id}, GCS URI: {gcs_uri}")
+    doc_ref = db.collection("documents").document(doc_id)
+
+    try:
+        # 0. Set initial status in Firestore
+        print(f"Setting initial status 'Processing' for doc_id: {doc_id}")
+        doc_ref.set({
+            "source_name": original_filename,
+            "document_type": "TEXT", # Specify type
+            "gcs_uri": gcs_uri,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "status": "Processing"
+        }, merge=True)
+
+        # 1. Read Text from GCS
+        print(f"Reading text content from {gcs_uri} for doc_id: {doc_id}...")
+        full_text = await read_text_from_gcs(gcs_uri)
+        print(f"Read {len(full_text)} characters from {gcs_uri}.")
+
+        # 2. Chunk Text (Use the existing helper)
+        print(f"Chunking text for doc_id: {doc_id}...")
+        text_chunks = chunk_text(full_text) # Use your preferred chunking strategy
+        print(f"Created {len(text_chunks)} chunks for doc_id: {doc_id}.")
+
+        # 3. Summarize Chunks and Prepare for Firestore
+        chunks_to_store = []
+        if text_chunks: # Only summarize if there are chunks
+            print(f"Summarizing chunks for doc_id: {doc_id}...")
+            for i, chunk in enumerate(text_chunks):
+                summary = await summarize_chunk(chunk)
+                chunks_to_store.append({
+                    "chunk_text": chunk,
+                    "summary": summary,
+                    "chunk_order": i
+                })
+                if (i + 1) % 10 == 0: # Log progress
+                    print(f"  Summarized chunk {i+1}/{len(text_chunks)} for doc_id: {doc_id}")
+        else:
+             print(f"No text content found to chunk for doc_id: {doc_id}. Skipping summarization.")
+
+
+        # 4. Store in Firestore (uses the updated store_chunks_in_firestore)
+        print(f"Storing {len(chunks_to_store)} chunks in Firestore subcollection for doc_id: {doc_id}...")
+        # Pass 'TEXT' as document_type, original_filename as source_name, and the gcs_uri
+        store_chunks_in_firestore(doc_id, original_filename, "TEXT", chunks_to_store, gcs_uri=gcs_uri, initial_status="Processing")
+
+        print(f"Successfully processed and stored TEXT document: {doc_id}")
+
+    except Exception as e:
+        print(f"Error during TEXT processing for doc_id {doc_id} ({gcs_uri}): {e}")
+        # Update status to 'Error' in Firestore
+        try:
+            doc_ref.update({"status": "Error"})
+            print(f"Updated status to 'Error' for doc_id: {doc_id}")
+        except Exception as update_e:
+            print(f"Failed to update status to 'Error' for doc_id {doc_id} after processing error: {update_e}")
+        raise e # Re-raise the exception so background task runner knows it failed
+
+
+# --- To run FastAPI locally (for development) ---
 if __name__ == "__main__":
-    import uvicorn
     # Make sure GCP_PROJECT env var is set if running locally and need GCP access
     # You might need to run `gcloud auth application-default login`
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8080)) # Use 8080 as default if not set
+    print(f"Starting Uvicorn on 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
