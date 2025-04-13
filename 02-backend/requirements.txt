@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+google-cloud-aiplatform>=1.38.0
+google-cloud-firestore
+google-cloud-storage
+pydantic
