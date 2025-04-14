@@ -15,9 +15,18 @@ from dotenv import load_dotenv # Import load_dotenv
 import base64 # Added for decoding Pub/Sub message
 import json   # Added for parsing decoded message
 import uvicorn
+from google.cloud.firestore_v1.base_document import DocumentSnapshot
+from google.api_core.exceptions import NotFound
+from google.cloud.firestore_v1.collection import CollectionReference
+import logging # Add this import
 
 # Load environment variables from .env file
 load_dotenv()
+
+# --- Basic Logging Configuration ---
+# Add this block to configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:     %(message)s')
+# --- End Logging Configuration ---
 
 # --- Configuration ---
 # Now os.environ.get will first look for variables loaded from .env
@@ -32,7 +41,7 @@ MAX_CHUNKS_FOR_CONTEXT = int(os.environ.get("MAX_CHUNKS_FOR_CONTEXT", 5)) # Conv
 # --- Initialization ---
 try:
     vertexai.init(project=PROJECT_ID, location=LOCATION)
-    db = firestore.Client()
+    db = firestore.Client(project=PROJECT_ID)
     model_extraction = GenerativeModel(MODEL_NAME_EXTRACTION)
     model_summarization = GenerativeModel(MODEL_NAME_SUMMARIZATION,
                                         generation_config=GenerationConfig(max_output_tokens=MAX_SUMMARY_TOKENS))
@@ -73,8 +82,8 @@ app.add_middleware(
 
 
 # --- Pydantic Models ---
-class ProcessPdfRequest(BaseModel):
-    gcs_uri: str = Field(..., description="GCS URI of the PDF file (gs://bucket_name/file_name)")
+class ProcessFileRequest(BaseModel):
+    gcs_uri: str = Field(..., description="GCS URI of the file (gs://bucket_name/file_name)")
     original_filename: str = Field(..., description="Original name of the uploaded file")
 
 class ChunkData(BaseModel):
@@ -422,26 +431,61 @@ async def process_uploaded_pdf(doc_id: str, gcs_uri: str, original_filename: str
 
 # --- API Endpoints ---
 
-@app.post("/process-pdf", status_code=status.HTTP_202_ACCEPTED) # Use status constant
-async def process_pdf_endpoint(request: ProcessPdfRequest, background_tasks: BackgroundTasks): # Add BackgroundTasks
+@app.post("/process-file", status_code=status.HTTP_202_ACCEPTED)
+async def process_file_endpoint(request: ProcessFileRequest, background_tasks: BackgroundTasks):
     """
-    HTTP Endpoint to manually trigger the processing of a PDF file stored in GCS.
-    Generates a doc_id and adds the processing task to the background.
+    HTTP Endpoint to manually trigger the processing of a file stored in GCS.
+    Determines file type from GCS URI and adds the appropriate processing task
+    to the background. Generates a doc_id.
     """
     print(f"Received HTTP request to process GCS URI: {request.gcs_uri}")
     doc_id = str(uuid.uuid4()) # Generate a unique ID for this document
 
     try:
-        # Use BackgroundTasks for more reliable background execution in FastAPI/Cloud Run
-        print(f"Adding processing task to background for doc_id: {doc_id} via HTTP endpoint.")
-        background_tasks.add_task(process_uploaded_pdf, doc_id, request.gcs_uri, request.original_filename)
+        # Determine file type from GCS URI
+        file_name = request.gcs_uri.lower() # Use lowercase for extension check
+        original_filename = request.original_filename # Keep original case for storage
 
-        # Immediately return 202
-        return {"message": "PDF processing accepted.", "doc_id": doc_id}
+        if file_name.endswith('.pdf'):
+            print(f"Detected PDF. Adding PDF processing task to background for doc_id: {doc_id}")
+            background_tasks.add_task(process_uploaded_pdf, doc_id, request.gcs_uri, original_filename)
+        elif file_name.endswith('.txt'):
+            print(f"Detected TXT. Adding Text processing task to background for doc_id: {doc_id}")
+            background_tasks.add_task(process_uploaded_text, doc_id, request.gcs_uri, original_filename)
+        # Add elif for other supported types here if needed
+        # elif file_name.endswith('.docx'):
+        #     background_tasks.add_task(process_uploaded_docx, doc_id, request.gcs_uri, original_filename)
+        else:
+            # Handle unsupported file types for manual trigger
+            print(f"Unsupported file type for manual processing: {request.gcs_uri}")
+            # Optionally create an 'Error' document entry immediately
+            if db:
+                try:
+                    db.collection("documents").document(doc_id).set({
+                        "status": "Error",
+                        "source_name": original_filename,
+                        "gcs_uri": request.gcs_uri,
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "error_message": f"Unsupported file type for manual trigger: {os.path.splitext(original_filename)[1]}",
+                        "document_type": "UNSUPPORTED"
+                    }, merge=True)
+                except Exception as db_e:
+                    print(f"Failed to mark unsupported file {doc_id} as Error in Firestore: {db_e}")
+            # Raise HTTPException to inform the client
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type for manual processing: {os.path.splitext(original_filename)[1] or 'Unknown'}. Supported types: .pdf, .txt"
+            )
 
+        # Immediately return 202 if a task was added
+        return {"message": "File processing accepted.", "doc_id": doc_id}
+
+    except HTTPException as http_exc:
+         # Re-raise HTTP exceptions (like the 400 for unsupported type)
+         raise http_exc
     except Exception as e:
-        # This catch block handles errors during task *submission*
-        print(f"Error initiating PDF processing for {request.gcs_uri} via HTTP: {e}")
+        # This catch block handles errors during task *submission* or initial checks
+        print(f"Error initiating file processing for {request.gcs_uri} via HTTP: {e}")
         # Attempt to mark as error if we know the doc_id (though task might not have started)
         if doc_id and db:
              try:
@@ -454,7 +498,7 @@ async def process_pdf_endpoint(request: ProcessPdfRequest, background_tasks: Bac
                  }, merge=True)
              except Exception as update_e:
                  print(f"Failed to mark doc {doc_id} as Error during HTTP initiation failure: {update_e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to initiate PDF processing: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to initiate file processing: {e}")
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -499,6 +543,8 @@ async def get_documents():
     Retrieves a list of processed documents (PDFs and Text) from Firestore.
     Includes document status.
     """
+    
+    logging.info("GET /documents endpoint called.") # Add log at entry
     if not db:
         raise HTTPException(status_code=500, detail="Firestore not initialized")
 
@@ -551,6 +597,79 @@ async def get_documents():
         print(f"Error fetching documents from Firestore: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch documents: {e}")
 
+
+@app.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document_endpoint(doc_id: str):
+    """
+    Deletes a document and all its associated chunks from Firestore.
+    """
+    logging.info(f"DELETE /documents/{doc_id} endpoint called.") # Add log at entry
+
+    if not db:
+        logging.error("Firestore not initialized during delete request.") # Log errors too
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Firestore not initialized")
+
+    doc_ref = db.collection("documents").document(doc_id)
+    chunks_ref = doc_ref.collection("chunks") # Reference to the subcollection
+
+    try:
+        # Replace print with logging.info
+        logging.info(f"Attempting to get document with ID: '{doc_id}' for deletion.")
+        # 1. Check if the document exists
+        doc_snapshot: DocumentSnapshot = doc_ref.get()
+        if not doc_snapshot.exists:
+            # If not found...
+            logging.warning(f"Document {doc_id} not found for deletion.") # Use warning level
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document with ID {doc_id} not found")
+
+        # 2. Delete all chunks in the subcollection first
+        logging.info(f"Deleting chunks for document: {doc_id}...")
+        delete_collection(chunks_ref, batch_size=100) # Adjust batch size as needed
+        logging.info(f"Finished deleting chunks for document: {doc_id}")
+
+
+        # 3. Now delete the main document itself
+        logging.info(f"Deleting main document: {doc_id}")
+        doc_ref.delete()
+        logging.info(f"Successfully deleted document and chunks for ID: {doc_id}")
+
+        # Return 204 No Content (FastAPI handles this based on status_code)
+        return
+
+    except NotFound:
+         logging.warning(f"Document {doc_id} was not found during deletion process (possibly already deleted).")
+         # Return 204 as the desired state (deleted) is achieved
+         return
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions (like the 404 above)
+        logging.error(f"HTTPException during delete for {doc_id}: {http_exc.detail}")
+        raise http_exc
+    except Exception as e:
+        logging.exception(f"Error deleting document {doc_id}: {e}") # Use logging.exception to include traceback
+        # Log the error appropriately (consider more detailed logging)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred while deleting document {doc_id}.")
+
+# --- Add this helper function ---
+def delete_collection(coll_ref: CollectionReference, batch_size: int):
+    """Recursively deletes the documents in a collection or subcollection in batches."""
+    docs = coll_ref.limit(batch_size).stream()
+    deleted = 0
+
+    for doc in docs:
+        # Use logging instead of print for consistency, and fix the path attribute
+        logging.info(f"Deleting doc {doc.id} from {coll_ref._path}") # Use _path
+        doc.reference.delete()
+        deleted = deleted + 1
+
+    # If we deleted a full batch, there might be more documents, so recurse
+    if deleted >= batch_size:
+        # Use logging and fix the path attribute
+        logging.info(f"Deleted batch of {deleted} from {coll_ref._path}, checking for more...") # Use _path
+        return delete_collection(coll_ref, batch_size)
+    else:
+        # Use logging and fix the path attribute
+        logging.info(f"Finished deleting all documents from {coll_ref._path}") # Use _path
+        return
 
 # --- Eventarc GCS Trigger Endpoint ---
 
@@ -685,7 +804,7 @@ async def read_text_from_gcs(gcs_uri: str) -> str:
         blob = bucket.blob(object_name)
 
         print(f"Attempting to download text from: {gcs_uri}")
-        content_bytes = await blob.download_as_bytes() # Use async download
+        content_bytes = blob.download_as_bytes()
         print(f"Downloaded {len(content_bytes)} bytes from {gcs_uri}")
 
         # Decode assuming UTF-8, handle potential errors

@@ -16,24 +16,28 @@ const bucket = storage.bucket(BUCKET_NAME);
 
 export async function POST(request: NextRequest) {
   try {
-    const { filename, contentType } = await request.json();
+    // Destructure originalTitle as well
+    const { filename, contentType, originalTitle } = await request.json();
 
     if (!filename || !contentType) {
       return NextResponse.json({ error: 'Missing filename or contentType' }, { status: 400 });
     }
 
     // --- Security: Sanitize and create a unique object name ---
-    // Basic sanitization: remove potentially harmful characters. Improve as needed.
+    // Sanitize the filename received from the frontend
     const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    // Create a unique path/name to prevent overwrites and potential exploits
+    // Create a unique path/name
     const uniqueObjectName = `uploads/${uuidv4()}-${safeFilename}`;
     // ---------------------------------------------------------
 
     const file = bucket.file(uniqueObjectName);
 
     // --- Define the custom header ---
+    // Use the originalTitle for the metadata value if provided (for text), otherwise use filename
+    // This ensures the backend gets the user's intended title via metadata
+    const metadataValue = originalTitle || filename;
     const customMetadataHeader = {
-        'x-goog-meta-originalfilename': filename
+        'x-goog-meta-originalfilename': metadataValue
     };
     // ------------------------------
 
@@ -53,14 +57,14 @@ export async function POST(request: NextRequest) {
     // The GCS URI needed by your backend processing endpoint
     const gcsUri = `gs://${BUCKET_NAME}/${uniqueObjectName}`;
 
-    console.log(`Generated signed URL for ${uniqueObjectName} (expires in 15 min), expects custom header.`);
+    console.log(`Generated signed URL for ${uniqueObjectName} (expires in 15 min), expects header x-goog-meta-originalfilename=${metadataValue}.`);
 
-    // Return the necessary info, including the header the frontend MUST send
+    // Return the necessary info, including the exact header(s) used for signing
     return NextResponse.json({
         signedUrl,
         gcsUri,
         objectName: uniqueObjectName,
-        // Keep sending this so frontend knows which header+value to include
+        // Send back the exact header key/value pair used for signing
         metadataHeaders: customMetadataHeader
      });
 

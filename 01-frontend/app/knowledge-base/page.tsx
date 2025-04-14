@@ -1,6 +1,6 @@
 "use client"; // Add this directive for using state and effects
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button"; // Assuming you use shadcn/ui
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -79,7 +79,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5147"; // Your FastAPI backend URL
 const GENERATE_UPLOAD_URL_ENDPOINT = "/api/generate-upload-url"; // Next.js API route
 const GET_ITEMS_ENDPOINT = `${API_BASE_URL}/documents`; // Add the new endpoint URL
-// const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Keep for later
+const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Define the base URL for delete
 
 export default function KnowledgeBasePage() {
   const [activeView, setActiveView] = useState<"overview" | "upload">(
@@ -90,35 +90,76 @@ export default function KnowledgeBasePage() {
   const [pastedTitle, setPastedTitle] = useState("");
   const [pastedContent, setPastedContent] = useState("");
   const [isLoading, setIsLoading] = useState(false); // Loading state for uploads/saves
-  const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep loading state
+  const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep initial loading state
 
-  // --- Fetch Initial Data ---
-  useEffect(() => {
-    const fetchItems = async () => {
+  // --- Fetch Data Logic (extracted) ---
+  const fetchItems = useCallback(async (isInitialLoad = false) => {
+    // Only set global fetching state on initial load
+    if (isInitialLoad) {
       setIsFetchingItems(true);
-      setKnowledgeItems([]); // Clear existing items before fetching
-      try {
-        console.log(`Fetching knowledge items from: ${GET_ITEMS_ENDPOINT}`);
-        const response = await fetch(GET_ITEMS_ENDPOINT);
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(
-            `Failed to fetch items: ${response.status} ${response.statusText} - ${errorText}`
-          );
-        }
-        const data: KnowledgeItem[] = await response.json(); // Expecting an array of KnowledgeItem compatible objects
-        console.log("Fetched items:", data);
-        setKnowledgeItems(data);
-      } catch (error) {
-        console.error("Error fetching knowledge items:", error);
-        // TODO: Show error to user (e.g., using a toast notification)
-        setKnowledgeItems([]); // Set to empty on error
-      } finally {
+      setKnowledgeItems([]); // Clear on initial load
+    }
+    console.log(`Fetching knowledge items from: ${GET_ITEMS_ENDPOINT}`);
+    try {
+      const response = await fetch(GET_ITEMS_ENDPOINT);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Failed to fetch items: ${response.status} ${response.statusText} - ${errorText}`
+        );
+      }
+      const data: KnowledgeItem[] = await response.json();
+      console.log("Fetched items:", data);
+
+      // Update state: Replace the whole list or merge based on IDs
+      // For simplicity with polling, replacing is easier if backend returns full list
+      setKnowledgeItems(data);
+
+    } catch (error) {
+      console.error("Error fetching knowledge items:", error);
+      // TODO: Show error to user (e.g., using a toast notification)
+      if (isInitialLoad) {
+        setKnowledgeItems([]); // Set to empty on initial load error
+      } // Don't clear items if a poll fails, keep the last known state
+    } finally {
+      if (isInitialLoad) {
         setIsFetchingItems(false);
       }
+    }
+  }, []); // Empty dependency array as it doesn't depend on component state/props directly
+
+  // --- Initial Data Fetch ---
+  useEffect(() => {
+    fetchItems(true); // Pass true for initial load
+  }, [fetchItems]); // Depend on the memoized fetchItems function
+
+  // --- Polling Logic ---
+  useEffect(() => {
+    // Check if there are items currently being processed or uploaded
+    const itemsToPoll = knowledgeItems.filter(
+      (item) => item.status === "Processing" || item.status === "Uploading"
+    );
+
+    let intervalId: NodeJS.Timeout | null = null;
+
+    if (itemsToPoll.length > 0) {
+      console.log(`Polling status for ${itemsToPoll.length} item(s)...`);
+      intervalId = setInterval(() => {
+        console.log("Polling interval triggered...");
+        fetchItems(false); // Fetch updates, not initial load
+      }, 10000); // Poll every 10 seconds
+    } else {
+      console.log("No items in Processing/Uploading state. Stopping polling.");
+    }
+
+    // Cleanup function: clear interval when component unmounts or dependencies change
+    return () => {
+      if (intervalId) {
+        console.log("Clearing polling interval.");
+        clearInterval(intervalId);
+      }
     };
-    fetchItems();
-  }, []); // Run only on mount
+  }, [knowledgeItems, fetchItems]); // Re-run effect if items or fetchItems change
 
   // --- Event Handlers ---
 
@@ -286,8 +327,12 @@ export default function KnowledgeBasePage() {
       const signedUrlResponse = await fetch(GENERATE_UPLOAD_URL_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Send filename and content type like a regular file upload
-        body: JSON.stringify({ filename: filename, contentType: contentType }),
+        // Send filename, content type, AND the original title for metadata signing
+        body: JSON.stringify({
+            filename: filename, // The unique name for the GCS object
+            contentType: contentType,
+            originalTitle: originalTitle // Send the original title
+        }),
       });
 
       if (!signedUrlResponse.ok) {
@@ -299,6 +344,7 @@ export default function KnowledgeBasePage() {
         );
       }
 
+      // Destructure metadataHeaders correctly
       const { signedUrl, gcsUri, objectName, metadataHeaders } =
         await signedUrlResponse.json();
       console.log(`Got signed URL for ${objectName}, starting text upload...`);
@@ -319,30 +365,23 @@ export default function KnowledgeBasePage() {
       const uploadHeaders = new Headers({
         "Content-Type": contentType, // Set content type for the upload
       });
-      // Add the required metadata header (original filename/title)
-      if (metadataHeaders && metadataHeaders['x-goog-meta-originalfilename']) {
-         // Use the original title for the metadata, not the generated filename
-         uploadHeaders.append('x-goog-meta-originalfilename', originalTitle);
-         // Add any other required headers from metadataHeaders if necessary
-         // Example: if other x-goog-meta-* headers were returned
-         // for (const [key, value] of Object.entries(metadataHeaders)) {
-         //   if (key.toLowerCase() !== 'x-goog-meta-originalfilename') { // Avoid duplicating
-         //      uploadHeaders.append(key, value as string);
-         //   }
-         // }
-      } else {
-          console.warn("Metadata headers (specifically x-goog-meta-originalfilename) not received from signed URL endpoint. Original title metadata might be missing on GCS object.");
-          // Still attempt upload, but backend might have issues getting the correct title later
-          // As a fallback, you could add the generated filename here if needed, but the title is better
-          // uploadHeaders.append('x-goog-meta-originalfilename', filename);
-      }
 
+      // Add the required metadata header(s) EXACTLY as returned by the API
+      if (metadataHeaders) {
+        for (const [key, value] of Object.entries(metadataHeaders)) {
+           // Append the exact header name and value returned by the API route
+           uploadHeaders.append(key, value as string);
+        }
+      } else {
+          console.warn("Metadata headers not received from signed URL endpoint. Metadata might be missing on GCS object.");
+          // Attempt upload without the header if not provided (might fail if backend requires it)
+      }
 
       console.log("Uploading text blob to GCS with headers:", Object.fromEntries(uploadHeaders.entries()));
 
       const uploadResponse = await fetch(signedUrl, {
         method: "PUT",
-        headers: uploadHeaders,
+        headers: uploadHeaders, // Use headers with metadata
         body: textBlob, // Upload the Blob
       });
 
@@ -394,13 +433,72 @@ export default function KnowledgeBasePage() {
     }
   };
 
-  const handleDeleteItem = async (id: string) => {
-    console.log("Deleting item:", id);
-    // TODO: Implement API call to delete item (e.g., DELETE /documents/{id})
-    // This should delete the document metadata and associated chunks from Firestore.
-    alert(`Simulating delete for item ID: ${id}.`);
-    // Optimistic UI update
+  const handleDeleteItem = async (id: string, name: string) => {
+    // 1. Confirmation Dialog
+    if (!window.confirm(`Are you sure you want to delete "${name}"? This action cannot be undone.`)) {
+      return; // Stop if user cancels
+    }
+
+    console.log("Attempting to delete item:", id);
+    // Store the item to potentially restore on error (optional but good practice)
+    const itemToDelete = knowledgeItems.find(item => item.id === id);
+    if (!itemToDelete) {
+        console.warn("Item to delete not found in current state:", id);
+        return; // Should not happen if button is clicked on an existing item
+    }
+
+    // 2. Optimistic UI update: Remove the item immediately
     setKnowledgeItems((prev) => prev.filter((item) => item.id !== id));
+
+    try {
+      // 3. Call the Backend API
+      const response = await fetch(`${DELETE_ITEM_ENDPOINT}/${id}`, { // Append ID to URL
+        method: "DELETE",
+        headers: {
+            // Add any necessary headers like Authorization if needed in the future
+            // 'Authorization': `Bearer ${your_token}`
+        }
+      });
+
+      // 4. Handle Response
+      if (!response.ok) {
+        // If the response status code is not 2xx (e.g., 404, 500)
+        let errorDetails = `Status: ${response.status} ${response.statusText}`;
+        try {
+            // Try to parse potential JSON error from backend
+            const errorData = await response.json();
+            errorDetails += ` - ${errorData.detail || JSON.stringify(errorData)}`;
+        } catch (parseError) {
+            // If response is not JSON, try to read as text
+            try {
+                const errorText = await response.text();
+                errorDetails += ` - ${errorText || 'No further details'}`;
+            } catch (textError) {
+                 // Ignore if text cannot be read
+            }
+        }
+        throw new Error(`Failed to delete item: ${errorDetails}`);
+      }
+
+      // Success! (Status code 204 No Content doesn't have a body)
+      console.log(`Successfully deleted item ID: ${id} from backend.`);
+      // Optional: Show success notification (e.g., using a toast library)
+      // showToast(`"${name}" deleted successfully.`);
+
+    } catch (error) {
+      console.error("Error deleting item:", error);
+
+      // 5. Rollback UI update on error
+      // Add the item back to the list. This simple version adds it back to the start.
+      // A more robust solution might try to re-insert at the original position or sort again.
+      setKnowledgeItems((prev) => [itemToDelete, ...prev].sort((a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime())); // Example sort
+
+      // Show error message to user
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`Failed to delete "${name}".\nError: ${errorMessage}`);
+      // TODO: Replace alert with a better notification system (e.g., toast)
+    }
+    // Optional: Add a finally block if you need to reset a specific 'deleting' state
   };
 
   return (
@@ -524,11 +622,13 @@ export default function KnowledgeBasePage() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => handleDeleteItem(item.id)}
+                              // Pass both id and name to the handler
+                              onClick={() => handleDeleteItem(item.id, item.name)}
                               disabled={
                                 item.status === "Uploading" ||
                                 item.status === "Processing"
-                              } // Disable delete during processing
+                              } // Keep disabling during processing
+                              title={`Delete ${item.name}`} // Add title for accessibility/tooltip
                             >
                               <Trash2 className="h-4 w-4" />
                               <span className="sr-only">Delete</span>
