@@ -629,6 +629,7 @@ export default function KnowledgeBasePage() {
                                 item.status === "Processing"
                               } // Keep disabling during processing
                               title={`Delete ${item.name}`} // Add title for accessibility/tooltip
+                              className="cursor-pointer"
                             >
                               <Trash2 className="h-4 w-4" />
                               <span className="sr-only">Delete</span>
