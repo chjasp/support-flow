@@ -131,20 +131,64 @@ class GcsEventData(BaseModel):
 
 # --- Helper Functions ---
 
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
-    """Simple chunking function based on character count."""
-    # This is a very basic chunking method. Consider using token-based chunking
-    # or paragraph/sentence splitting from libraries like LangChain or NLTK
-    # for more semantic chunking.
+def chunk_text(text: str, chunk_size: int = 10000, overlap: int = 500) -> List[str]:
+    """
+    Chunks text, attempting to split on whitespace near the chunk_size limit
+    to avoid cutting words.
+    """
     chunks = []
     start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += chunk_size - overlap
-        if start < 0: # Avoid infinite loop if overlap >= chunk_size
-            start = end
+    text_len = len(text)
+
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size must be greater than overlap")
+
+    while start < text_len:
+        # Calculate the ideal end point
+        ideal_end = start + chunk_size
+
+        # If the ideal end is past the text length, take the rest
+        if ideal_end >= text_len:
+            actual_end = text_len
+        else:
+            # Find the last whitespace before the ideal end point
+            # Search back from ideal_end up to a reasonable limit (e.g., start + overlap)
+            # to avoid searching too far back if there's no whitespace.
+            search_start = max(start, ideal_end - chunk_size // 2) # Don't search back too far
+            last_space = text.rfind(' ', search_start, ideal_end)
+            last_newline = text.rfind('\n', search_start, ideal_end)
+            split_pos = max(last_space, last_newline)
+
+            # If we found a whitespace, split there. Otherwise, split at ideal_end.
+            if split_pos > start: # Ensure we found a space *after* the current start
+                actual_end = split_pos + 1 # Split *after* the whitespace
+            else:
+                # Fallback: No suitable whitespace found, split at the ideal point
+                actual_end = ideal_end
+
+        # Extract the chunk
+        chunk = text[start:actual_end]
+        # Only add non-empty chunks
+        if chunk.strip(): # Check if chunk is not just whitespace
+             chunks.append(chunk)
+
+        # Calculate the next start position based on the *ideal* chunk size and overlap
+        # This ensures overlap is consistent even if the actual chunk was shorter.
+        next_start = start + chunk_size - overlap
+
+        # If we split at whitespace and the actual chunk was much shorter,
+        # ensure the next start doesn't skip too much. It should be at least
+        # after the current actual_end, but ideally respects the overlap.
+        # However, the standard overlap calculation usually works well enough.
+        # If the fallback split occurred (actual_end == ideal_end), next_start is correct.
+        # If a whitespace split occurred (actual_end < ideal_end), next_start
+        # might be slightly further than 'overlap' chars from actual_end, which is fine.
+        start = next_start
+
+        # Safety break for potential infinite loops (e.g., if overlap calculation is wrong)
+        if start >= text_len or actual_end == start:
+             break # Exit if start doesn't advance or goes past the end
+
     return chunks
 
 async def extract_text_from_pdf_gemini(gcs_uri: str) -> str:
@@ -166,7 +210,7 @@ async def summarize_chunk(chunk_text: str) -> str:
     if not model_summarization:
         raise HTTPException(status_code=500, detail="Summarization model not initialized")
     try:
-        prompt = f"Summarize the key information in the following text chunk in about {MAX_SUMMARY_TOKENS // 5} words. Focus on the main topics and entities:\n\n{chunk_text}"
+        prompt = f"Summarize the key information in the following text chunk in about 10 sentences. Focus on the main topics and entities:\n\n{chunk_text}"
         response = await model_summarization.generate_content_async(prompt)
         # Add basic error handling/checking for blocked content if needed
         if response.candidates and response.candidates[0].content.parts:
@@ -319,34 +363,60 @@ async def generate_answer(query: str, context_chunks: List[Dict[str, Any]]) -> s
     """Generates an answer using Gemini based on the query and context."""
     if not model_generation:
         raise HTTPException(status_code=500, detail="Generation model not initialized")
+
+    context_str = "No relevant context found."
+    prompt_template = "" # Initialize prompt template variable
+
     if not context_chunks:
-        # Handle case where no relevant chunks were found
-        # Option 1: Tell the user no context was found
-        # return "I couldn't find relevant information in the provided documents to answer your question."
-        # Option 2: Try answering without context (might hallucinate)
         logging.info("Warning: No relevant chunks found. Attempting to answer query without context.")
-        context_str = "No relevant context found."
+        # If no context, directly ask the model using its general knowledge
+        prompt_template = f"""Answer the following user question using your general knowledge.
+
+    Format your answer using Markdown.
+    - Use headings (#, ##), bullet points (- or *), or numbered lists (1., 2.) where appropriate to structure the information clearly (e.g., for steps, key points, or lists).
+    - Use bold text (**text**) for emphasis where needed.
+    - Ensure distinct paragraphs are separated by double newlines (\n\n).
+    - If the answer involves steps or a list like in the user's example, please use appropriate Markdown list formatting.
+
+    User Question: {query}
+
+    Answer (in Markdown):
+    """
     else:
-         # Format context
+        # Format context if chunks were found
         context_str = "\n---\n".join([chunk.get("chunk_text", "") for chunk in context_chunks])
+        # --- Revised Prompt with Formatting Instructions ---
+        prompt_template = f"""Answer the user's question based *primarily* on the provided context below.
+    If the context does not provide a sufficient answer, use your general knowledge to supplement, but clearly indicate if the answer goes beyond the provided context.
+    Do not mention the context source explicitly (e.g., "Based on the context...") unless it's crucial for clarification.
 
-    prompt = f"""Based ONLY on the following context, answer the user's question. If the context doesn't contain the answer, say "I cannot answer this question based on the provided documents."
+    Format your answer using Markdown.
+    - Use headings (#, ##), bullet points (- or *), or numbered lists (1., 2.) where appropriate to structure the information clearly (e.g., for steps, key points, or lists).
+    - Use bold text (**text**) for emphasis where needed (like the bolded list items in the user's example image).
+    - Ensure distinct paragraphs are separated by double newlines (\n\n).
+    - Structure the response logically, potentially with an introduction, main points (possibly as a list), and a conclusion if appropriate for the query.
 
-Context:
-{context_str}
+    Context:
+    ---
+    {context_str}
+    ---
 
-User Question: {query}
+    User Question: {query}
 
-Answer:
-"""
+    Answer (in Markdown):
+    """
+        # --- End Revised Prompt ---
+
     try:
-        response = await model_generation.generate_content_async(prompt)
-         # Add basic error handling/checking for blocked content if needed
+        # Use the selected prompt template
+        response = await model_generation.generate_content_async(prompt_template)
+        # Add basic error handling/checking for blocked content if needed
         if response.candidates and response.candidates[0].content.parts:
+            # The response text should now contain Markdown
             return response.text
         else:
-             logging.info(f"Warning: Answer generation produced no content for query: {query}")
-             return "An error occurred while generating the answer, or the response was empty/blocked."
+            logging.info(f"Warning: Answer generation produced no content for query: {query}")
+            return "An error occurred while generating the answer, or the response was empty/blocked."
 
     except Exception as e:
         logging.info(f"Error generating answer with Gemini: {e}")
@@ -501,40 +571,443 @@ async def process_file_endpoint(request: ProcessFileRequest, background_tasks: B
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to initiate file processing: {e}")
 
 
-@app.post("/query", response_model=QueryResponse)
-async def query_endpoint(request: QueryRequest):
+# --- New Helper Function for Parsing LLM Ranking ---
+def parse_llm_ranking(response_text: str, index_to_chunk_map: Dict[int, Dict[str, str]]) -> List[Dict[str, Any]]:
     """
-    Endpoint to handle user queries. Searches summaries and generates an answer.
-    """
-    if not db or not model_generation:
-         raise HTTPException(status_code=500, detail="Backend services not fully initialized.")
+    Parses the LLM response to extract ranked chunk IDs and scores.
 
-    logging.info(f"Received query: {request.query}")
+    Args:
+        response_text: The raw text output from the LLM.
+        index_to_chunk_map: A dictionary mapping the prompt index (1-based) to chunk info ({'doc_id': ..., 'chunk_id': ...}).
+
+    Returns:
+        A list of dictionaries, each containing 'doc_id', 'chunk_id', and 'score',
+        sorted by score descending. Returns empty list if parsing fails.
+    """
+    ranked_chunks = []
+    # Regex to find lines like "Doc: 9, Relevance: 7" or "Chunk: 9, Relevance: 7"
+    # Allows for variations in spacing and capitalization. Handles scores 1-10.
+    pattern = re.compile(r"^\s*(?:Doc|Chunk):\s*(\d+)\s*,\s*Relevance:\s*([1-9]|10)\s*$", re.IGNORECASE | re.MULTILINE)
 
     try:
-        # 1. Search relevant summaries
-        # This uses the basic keyword scan across all summaries.
-        # Consider adding filtering by doc_id if needed based on request.
-        logging.info("Searching summaries...")
-        retrieved_chunks_data = search_summaries_keyword(request.query)
-        logging.info(f"Found {len(retrieved_chunks_data)} potentially relevant chunks.")
+        matches = pattern.findall(response_text)
+        logging.info(f"LLM Ranking - Found matches: {matches}")
 
-        # Convert raw dicts to Pydantic models for the response
-        retrieved_chunks_models = [ChunkData(**chunk_data) for chunk_data in retrieved_chunks_data]
+        for match in matches:
+            prompt_index = int(match[0])
+            score = int(match[1])
 
-        # 2. Generate Answer
-        logging.info("Generating answer...")
-        answer = await generate_answer(request.query, retrieved_chunks_data) # Pass the raw dicts here
+            if prompt_index in index_to_chunk_map:
+                chunk_info = index_to_chunk_map[prompt_index]
+                ranked_chunks.append({
+                    "doc_id": chunk_info["doc_id"],
+                    "chunk_id": chunk_info["chunk_id"],
+                    "score": score
+                })
+            else:
+                logging.warning(f"LLM Ranking - Parsed index {prompt_index} not found in map.")
 
-        return QueryResponse(answer=answer, retrieved_chunks=retrieved_chunks_models)
+        # Sort by score descending
+        ranked_chunks.sort(key=lambda x: x["score"], reverse=True)
+        logging.info(f"LLM Ranking - Successfully parsed and sorted {len(ranked_chunks)} chunks.")
+
+    except Exception as e:
+        logging.error(f"LLM Ranking - Error parsing response: {e}\nResponse was:\n{response_text}")
+        return [] # Return empty on error
+
+    return ranked_chunks
+
+
+# --- Modified Keyword Search Function ---
+def search_chunks_keyword(query: str, max_results: int = 20) -> List[Dict[str, Any]]:
+    """
+    Performs a basic keyword search across all chunk_text in Firestore
+    using a Collection Group query on the 'chunks' subcollections.
+    Returns a list of chunks with keyword scores.
+    """
+    if not db:
+        logging.error("Firestore not initialized for keyword search.")
+        # Return empty list instead of raising HTTPException here,
+        # as the calling function might handle it.
+        return []
+
+    logging.info(f"Starting keyword search on chunk_text for query: '{query}'")
+    try:
+        # Basic keyword extraction
+        stopwords = set(["a", "an", "the", "is", "in", "it", "of", "for", "on", "with"])
+        keywords = [word for word in re.findall(r'\b\w+\b', query.lower()) if word not in stopwords]
+
+        if not keywords:
+            logging.info("No keywords extracted from query for keyword search.")
+            return []
+
+        relevant_chunks = []
+        # Use collection_group to query across all 'chunks' subcollections
+        # Ensure the necessary Firestore index exists!
+        chunks_stream = db.collection_group("chunks").stream() # Consider adding .where("status", "==", "Ready") on parent? No, query parent docs first.
+
+        # --- Optimization: Query only chunks from 'Ready' documents ---
+        ready_doc_ids = set()
+        docs_ref = db.collection("documents").where("status", "==", "Ready").select([]) # Select no fields, just get IDs
+        ready_docs_stream = docs_ref.stream()
+        for doc in ready_docs_stream:
+            ready_doc_ids.add(doc.id)
+
+        if not ready_doc_ids:
+            logging.info("No 'Ready' documents found for keyword search.")
+            return []
+        logging.info(f"Keyword search will target chunks from {len(ready_doc_ids)} 'Ready' documents.")
+        # --- End Optimization ---
+
+
+        chunk_count = 0
+        for chunk_doc in chunks_stream:
+            # --- Get parent doc_id and check if it's 'Ready' ---
+            parent_doc_ref = chunk_doc.reference.parent.parent
+            if not parent_doc_ref:
+                 logging.warning(f"Keyword Search: Could not get parent document for chunk {chunk_doc.id}")
+                 continue
+            doc_id = parent_doc_ref.id
+            if doc_id not in ready_doc_ids:
+                continue # Skip chunks from documents not in 'Ready' state
+            # --- End Parent Check ---
+
+            chunk_count += 1
+            chunk_data = chunk_doc.to_dict()
+            chunk_text_lower = chunk_data.get("chunk_text", "").lower()
+            chunk_id = chunk_doc.id # Get the chunk ID
+
+            # Score based on keyword presence in chunk_text
+            score = 0
+            matched_keywords = set()
+            for keyword in keywords:
+                # Simple presence check, could be enhanced with frequency (TF-IDF) later
+                if keyword in chunk_text_lower:
+                     score += 1 # Increment score for each keyword found
+                     matched_keywords.add(keyword)
+
+            if score > 0:
+                relevant_chunks.append({
+                    "doc_id": doc_id,
+                    "chunk_id": chunk_id,
+                    "keyword_score": score,
+                    "matched_keywords": list(matched_keywords) # Optional: for debugging/info
+                })
+
+        logging.info(f"Keyword search scanned {chunk_count} chunks from ready documents, found {len(relevant_chunks)} potential matches.")
+
+        # Sort by score (descending)
+        relevant_chunks.sort(key=lambda x: x["keyword_score"], reverse=True)
+
+        # Limit results
+        return relevant_chunks[:max_results]
+
+    except Exception as e:
+        logging.exception(f"Error during keyword search on chunk_text: {e}")
+        # Check if the error is related to needing an index
+        if "requires an index" in str(e):
+             logging.error(">>> Firestore Index Required <<<")
+             logging.error("Please check the backend logs for a URL to create the necessary Firestore index for the collection group query.")
+        # Return empty list on error to allow fusion logic to proceed if possible
+        return []
+
+
+# --- New Reciprocal Rank Fusion (RRF) Function ---
+def combine_rankings_rrf(list1: List[Dict[str, Any]], list2: List[Dict[str, Any]], k: int = 60, score_key1: str = 'keyword_score', score_key2: str = 'llm_score') -> List[Dict[str, Any]]:
+    """
+    Combines two ranked lists using Reciprocal Rank Fusion (RRF).
+
+    Args:
+        list1: First ranked list of dicts, each with 'doc_id', 'chunk_id'.
+        list2: Second ranked list of dicts, each with 'doc_id', 'chunk_id'.
+        k: RRF constant (default 60).
+        score_key1: Key for score in list1 (used for sorting if ranks aren't explicit).
+        score_key2: Key for score in list2 (used for sorting if ranks aren't explicit).
+
+    Returns:
+        A single list of dicts, sorted by RRF score (descending),
+        each containing 'doc_id', 'chunk_id', and 'rrf_score'.
+    """
+    logging.info(f"Combining {len(list1)} keyword results and {len(list2)} LLM results using RRF (k={k}).")
+    # Ensure lists are sorted (higher score = better rank)
+    list1.sort(key=lambda x: x.get(score_key1, 0), reverse=True)
+    list2.sort(key=lambda x: x.get(score_key2, 0), reverse=True)
+
+    # Create rank maps (chunk_tuple -> rank)
+    rank_map1 = {(item['doc_id'], item['chunk_id']): i + 1 for i, item in enumerate(list1)}
+    rank_map2 = {(item['doc_id'], item['chunk_id']): i + 1 for i, item in enumerate(list2)}
+
+    # Get all unique chunks
+    all_chunks = set(rank_map1.keys()) | set(rank_map2.keys())
+
+    # Calculate RRF scores
+    fused_results = []
+    for chunk_tuple in all_chunks:
+        doc_id, chunk_id = chunk_tuple
+        rank1 = rank_map1.get(chunk_tuple)
+        rank2 = rank_map2.get(chunk_tuple)
+
+        rrf_score = 0.0
+        if rank1:
+            rrf_score += 1.0 / (k + rank1)
+        if rank2:
+            rrf_score += 1.0 / (k + rank2)
+
+        if rrf_score > 0: # Only include chunks that appeared in at least one list
+            fused_results.append({
+                "doc_id": doc_id,
+                "chunk_id": chunk_id,
+                "rrf_score": rrf_score
+            })
+
+    # Sort by RRF score (descending)
+    fused_results.sort(key=lambda x: x["rrf_score"], reverse=True)
+
+    logging.info(f"RRF resulted in {len(fused_results)} unique ranked chunks.")
+    return fused_results
+
+
+# --- Modify LLM Ranking Function to return scores ---
+async def find_relevant_chunks_llm_ranked(query: str, max_chunks_to_rank: int = 50) -> List[Dict[str, Any]]: # Limit how many summaries we rank
+    """
+    Finds relevant chunks using LLM ranking based on summaries.
+    1. Fetches chunk summaries from 'Ready' documents.
+    2. Asks LLM to rank summaries based on the query.
+    3. Parses LLM response and returns ranked list with scores.
+    """
+    if not db or not model_generation:
+        logging.error("Firestore or Generation model not initialized for LLM ranking.")
+        return []
+
+    logging.info(f"Starting LLM-ranked chunk retrieval for query: '{query}'")
+    all_summaries_data = []
+    index_to_chunk_map: Dict[int, Dict[str, str]] = {}
+    prompt_index_counter = 1
+
+    try:
+        # 1. Fetch summaries from ready documents (Limit the number fetched initially if needed)
+        docs_ref = db.collection("documents").where("status", "==", "Ready")
+        docs_stream = docs_ref.stream()
+
+        logging.info("Fetching summaries from 'Ready' documents for LLM ranking...")
+        doc_count = 0
+        chunk_summary_count = 0
+        summaries_for_prompt = []
+
+        # --- Fetch summaries efficiently ---
+        # We might hit limits if we try to rank *all* summaries.
+        # Let's fetch documents and then their chunks.
+        ready_docs = list(docs_stream) # Get all ready docs first
+        doc_count = len(ready_docs)
+        logging.info(f"Found {doc_count} 'Ready' documents.")
+
+        for doc in ready_docs:
+            doc_id = doc.id
+            # Fetch only summary and order? Firestore doesn't make selecting subcollection fields easy.
+            # Fetch chunk docs, limit if necessary?
+            chunks_ref = doc.reference.collection("chunks").order_by("chunk_order") # Keep order
+            chunks_stream = chunks_ref.stream()
+
+            for chunk_doc in chunks_stream:
+                if chunk_summary_count >= max_chunks_to_rank: # Stop collecting summaries if we hit the limit
+                    break
+
+                chunk_data = chunk_doc.to_dict()
+                if chunk_data and "summary" in chunk_data:
+                    summary_text = chunk_data["summary"]
+                    chunk_id = chunk_doc.id
+
+                    # Add to list for prompt generation and create mapping
+                    summary_info = {
+                        "prompt_index": prompt_index_counter,
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "summary": summary_text
+                    }
+                    summaries_for_prompt.append(summary_info)
+                    index_to_chunk_map[prompt_index_counter] = {"doc_id": doc_id, "chunk_id": chunk_id}
+                    prompt_index_counter += 1
+                    chunk_summary_count += 1
+            if chunk_summary_count >= max_chunks_to_rank:
+                 logging.info(f"Reached summary limit ({max_chunks_to_rank}) for LLM ranking prompt.")
+                 break # Stop processing more documents if limit reached
+
+        logging.info(f"Collected {chunk_summary_count} summaries from {doc_count} documents for LLM ranking.")
+
+        if not summaries_for_prompt:
+            logging.info("No summaries found in 'Ready' documents. Cannot perform LLM ranking.")
+            return []
+
+        # 2. Prepare prompt for LLM Ranking
+        context_parts = []
+        for summary_info in summaries_for_prompt:
+            context_parts.append(f"Chunk {summary_info['prompt_index']}:\n{summary_info['summary']}")
+
+        context_str = "\n\n".join(context_parts)
+
+        # --- Updated Ranking Prompt ---
+        # Ask for a score (1-10) and ensure it lists relevant ones.
+        ranking_prompt = f"""A list of document chunk summaries is shown below. Each chunk has a number. A question is also provided.
+
+Evaluate the relevance of each chunk summary to the user's question on a scale of 1 to 10 (1 = not relevant, 10 = highly relevant).
+Respond ONLY with the numbers of the chunks that are relevant (score > 3) to answering the question.
+For each relevant chunk, list its number and relevance score. Use the format "Chunk: <number>, Relevance: <score>" for each relevant chunk, with each on a new line. Order them from most relevant to least relevant.
+
+Example format:
+Chunk: 9, Relevance: 8
+Chunk: 3, Relevance: 6
+Chunk: 7, Relevance: 4
+
+Document Chunk Summaries:
+{context_str}
+
+User Question: {query}
+
+Relevant Chunks (Format: Chunk: <number>, Relevance: <score>):
+"""
+        # --- End Updated Ranking Prompt ---
+
+        logging.info(f"Sending ranking prompt to LLM ({len(summaries_for_prompt)} summaries)...")
+
+        # 3. Call LLM for Ranking
+        try:
+            response = await model_generation.generate_content_async(ranking_prompt)
+            llm_response_text = response.text
+            logging.info(f"LLM Ranking Response received:\n{llm_response_text}")
+        except Exception as gen_e:
+            logging.error(f"Error calling LLM for ranking: {gen_e}")
+            return []
+
+        # 4. Parse LLM Response (using existing helper, it extracts score)
+        # The parse_llm_ranking function already extracts 'score'
+        ranked_chunks = parse_llm_ranking(llm_response_text, index_to_chunk_map)
+        # Rename 'score' to 'llm_score' for clarity in fusion
+        for chunk in ranked_chunks:
+            chunk['llm_score'] = chunk.pop('score')
+
+
+        if not ranked_chunks:
+            logging.warning("LLM ranking parsing returned no chunks.")
+            return []
+
+        logging.info(f"LLM Ranking identified {len(ranked_chunks)} relevant chunks.")
+        # Return the ranked list with scores, no need to fetch full text here yet.
+        return ranked_chunks
+
+    except Exception as e:
+        logging.exception(f"Error during LLM-ranked chunk retrieval for query '{query}': {e}")
+        return []
+
+
+# --- Update Query Endpoint ---
+@app.post("/chat", response_model=QueryResponse)
+async def handle_query(request: QueryRequest):
+    """
+    Handles user queries using hybrid retrieval (keyword + LLM ranking)
+    with Reciprocal Rank Fusion (RRF) and generates an answer.
+    """
+    logging.info(f"Received chat query: '{request.query}'")
+    if not model_generation or not db:
+        logging.error("Cannot handle chat query: Backend services (Generation Model/Firestore) not initialized.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Backend services are not ready. Please try again later."
+        )
+
+    try:
+        # --- Hybrid Retrieval Steps ---
+        # 1. Perform Keyword Search on full text
+        logging.info("Step 1: Performing keyword search on full chunk text...")
+        # Limit the number of results from keyword search initially
+        keyword_results = search_chunks_keyword(request.query, max_results=20)
+
+        # 2. Perform LLM Ranking on summaries
+        logging.info("Step 2: Performing LLM ranking on summaries...")
+        # Limit the number of summaries sent to the LLM ranker
+        llm_ranked_results = await find_relevant_chunks_llm_ranked(request.query, max_chunks_to_rank=50)
+
+        # 3. Combine rankings using RRF
+        logging.info("Step 3: Combining results using Reciprocal Rank Fusion...")
+        # The keys 'keyword_score' and 'llm_score' are expected by the fusion function
+        final_ranked_list = combine_rankings_rrf(keyword_results, llm_ranked_results, k=60)
+
+        # 4. Select Top N chunks for context
+        # Use the MAX_CHUNKS_FOR_CONTEXT environment variable
+        top_n = MAX_CHUNKS_FOR_CONTEXT
+        top_chunks_refs = final_ranked_list[:top_n]
+        logging.info(f"Selected top {len(top_chunks_refs)} chunks after RRF.")
+
+        if not top_chunks_refs:
+             logging.info("No relevant chunks found after combining keyword and LLM ranking.")
+             # Decide how to respond: generate without context or inform user
+             answer = "I couldn't find relevant information in the documents based on your query."
+             return QueryResponse(answer=answer, retrieved_chunks=[])
+             # Or: relevant_chunks_data = [] # Proceed to generate_answer without context
+
+        # 5. Fetch Full Chunk Text for the final selected chunks
+        logging.info("Step 4: Fetching full text for top-ranked chunks...")
+        relevant_chunks_data = []
+        fetched_chunk_ids = set() # Avoid duplicates if somehow RRF returns same chunk twice
+        for chunk_ref in top_chunks_refs:
+            doc_id = chunk_ref["doc_id"]
+            chunk_id = chunk_ref["chunk_id"]
+            chunk_key = (doc_id, chunk_id)
+
+            if chunk_key in fetched_chunk_ids:
+                continue # Skip if already fetched
+
+            try:
+                chunk_doc_ref = db.collection("documents").document(doc_id).collection("chunks").document(chunk_id)
+                chunk_snapshot = chunk_doc_ref.get()
+                if chunk_snapshot.exists:
+                    chunk_data = chunk_snapshot.to_dict()
+                    # Add necessary fields for context generation and response model
+                    chunk_data["doc_id"] = doc_id
+                    chunk_data["chunk_id"] = chunk_id
+                    # Optionally add the final score for debugging/display?
+                    # chunk_data["final_score"] = chunk_ref["rrf_score"]
+                    relevant_chunks_data.append(chunk_data)
+                    fetched_chunk_ids.add(chunk_key)
+                else:
+                    logging.warning(f"Could not fetch chunk {chunk_id} from doc {doc_id} even though it was ranked.")
+            except Exception as fetch_e:
+                logging.error(f"Error fetching chunk {chunk_id} from doc {doc_id}: {fetch_e}")
+
+        logging.info(f"Successfully fetched {len(relevant_chunks_data)} full chunks for context.")
+        # --- End Hybrid Retrieval ---
+
+
+        # 6. Generate answer using the existing helper function
+        logging.info(f"Step 5: Generating answer using {len(relevant_chunks_data)} context chunks...")
+        answer = await generate_answer(request.query, relevant_chunks_data)
+
+        # 7. Format response chunks to match the Pydantic model
+        response_chunks = []
+        for chunk_dict in relevant_chunks_data:
+             try:
+                 response_chunks.append(ChunkData(
+                     chunk_id=chunk_dict.get("chunk_id", "unknown-chunk-id"),
+                     doc_id=chunk_dict.get("doc_id", "unknown-doc-id"),
+                     chunk_text=chunk_dict.get("chunk_text", ""),
+                     summary=chunk_dict.get("summary", ""), # Summary might not be present if only keyword match found it
+                     chunk_order=chunk_dict.get("chunk_order", -1)
+                 ))
+             except Exception as pydantic_error:
+                 logging.warning(f"Could not format chunk {chunk_dict.get('chunk_id')} for response model: {pydantic_error}")
+
+
+        logging.info(f"Sending answer for chat query '{request.query}'. Chunks used: {len(response_chunks)}")
+        return QueryResponse(answer=answer, retrieved_chunks=response_chunks)
 
     except HTTPException as http_exc:
-        # Re-raise HTTP exceptions directly
-        raise http_exc
+         logging.warning(f"HTTPException while handling chat query '{request.query}': {http_exc.status_code} - {http_exc.detail}")
+         raise http_exc
     except Exception as e:
-        logging.info(f"Unhandled error during query processing for query '{request.query}': {e}")
-        # Log the full error details here
-        raise HTTPException(status_code=500, detail=f"Internal server error during query processing: {e}")
+        logging.exception(f"Unexpected error handling chat query '{request.query}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An internal error occurred while processing the query."
+        )
 
 
 @app.get("/documents", response_model=list[DocumentListItem])
