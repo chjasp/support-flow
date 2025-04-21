@@ -39,44 +39,11 @@ type KnowledgeItem = {
   uploadError?: string; // Store upload error message
 };
 
-// Placeholder data - replace with actual data fetching
-const placeholderItems: KnowledgeItem[] = [
-  {
-    id: "1",
-    name: "faq.pdf",
-    type: "Document",
-    fileType: "PDF",
-    dateAdded: "2023-10-27",
-    status: "Ready",
-  },
-  {
-    id: "2",
-    name: "Website - Return Policy",
-    type: "Pasted Text",
-    dateAdded: "2023-10-26",
-    status: "Processing",
-  },
-  {
-    id: "3",
-    name: "onboarding.docx",
-    type: "Document",
-    fileType: "DOCX",
-    dateAdded: "2023-10-25",
-    status: "Error",
-  },
-  {
-    id: "4",
-    name: "support_scripts.txt",
-    type: "Document",
-    fileType: "TXT",
-    dateAdded: "2023-10-24",
-    status: "Ready",
-  },
-];
+
 
 // --- Define Backend URLs (Use Environment Variables in production) ---
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5147"; // Your FastAPI backend URL
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"; // Your FastAPI backend URL
 const GENERATE_UPLOAD_URL_ENDPOINT = "/api/generate-upload-url"; // Next.js API route
 const GET_ITEMS_ENDPOINT = `${API_BASE_URL}/documents`; // Add the new endpoint URL
 const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Define the base URL for delete
@@ -109,11 +76,15 @@ export default function KnowledgeBasePage() {
         );
       }
       const data: KnowledgeItem[] = await response.json();
-      console.log("Fetched items:", data);
+      // console.log("Fetched items:", data); // You can keep or remove this log
 
-      // Update state: Replace the whole list or merge based on IDs
-      // For simplicity with polling, replacing is easier if backend returns full list
-      setKnowledgeItems(data);
+      // Ensure IDs are strings (or handle potential non-string IDs if necessary)
+      const processedData = data.map(item => ({
+        ...item,
+        id: String(item.id) // Explicitly cast ID to string if needed
+      }));
+
+      setKnowledgeItems(processedData);
 
     } catch (error) {
       console.error("Error fetching knowledge items:", error);
@@ -568,7 +539,7 @@ export default function KnowledgeBasePage() {
                   </TableHeader>
                   <TableBody>
                     {isFetchingItems ? (
-                      <TableRow>
+                      <TableRow key="loading-row">
                         <TableCell colSpan={5} className="text-center h-24">
                           <Loader2 className="h-6 w-6 animate-spin inline-block mr-2" />{" "}
                           Loading items...
