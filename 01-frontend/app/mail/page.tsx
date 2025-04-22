@@ -166,61 +166,61 @@ export default function MailPage() {
 
   // --- Handler Function: Refine Reply ---
   const handleRefineRequest = async () => {
-    if (!refinementInput.trim() || !replyDraft.trim()) return;
+    // Ensure we have original content, a draft, and an instruction
+    if (!refinementInput.trim() || !replyDraft.trim() || !receivedEmailContent) {
+        setRefinementError("Cannot refine without original email, a draft, and an instruction.");
+        return;
+    }
 
     const userMessage: ChatMessage = { sender: "user", text: refinementInput };
     setChatHistory((prev) => [...prev, userMessage]);
+    const currentInstruction = refinementInput; // Capture before clearing
     setRefinementInput("");
     setIsRefining(true);
     setRefinementError(null);
 
     try {
-      // --- TODO: Implement actual API call for refinement ---
-      console.log("Sending refinement instruction:", {
-        draft: replyDraft,
-        instruction: userMessage.text,
-      });
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
-      // Placeholder response
-      const aiResponse: ChatMessage = {
-        sender: "ai",
-        text: `Okay, here's a suggestion based on '${userMessage.text}': [Refined text would go here based on backend response]`,
-      };
-      // --- End of Placeholder ---
-
-      /*
-      // --- Actual API Call Example (uncomment when backend is ready) ---
+      // --- Actual API Call for refinement ---
       const response = await fetch(REFINE_REPLY_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          draft: replyDraft,
-          instruction: userMessage.text,
+          email_content: receivedEmailContent, // Send original email
+          current_draft: replyDraft,          // Send current draft
+          instruction: currentInstruction,      // Send user's instruction
         }),
       });
 
       if (!response.ok) {
         let errorDetails = `Error: ${response.status} ${response.statusText}`;
-        try { const errorData = await response.json(); errorDetails = errorData.detail || errorDetails; } catch (e) { }
+        try {
+          const errorData = await response.json();
+          errorDetails = errorData.detail || errorDetails;
+        } catch (e) { /* Ignore if response not JSON */ }
         throw new Error(`Failed to refine reply: ${errorDetails}`);
       }
 
-      const data = await response.json();
+      const data: { refined_reply: string } = await response.json(); // Expect RefineReplyResponse structure
+
       const aiResponse: ChatMessage = {
         sender: "ai",
-        text: data.refined_reply, // Adjust based on actual API response structure
+        // You might want to prepend context, or just show the refined text directly
+        // text: `Okay, based on '${currentInstruction}', here's the refined version:\n\n${data.refined_reply}`,
+        text: data.refined_reply, // Display the refined reply directly in chat
       };
-      */
 
       setChatHistory((prev) => [...prev, aiResponse]);
+
+      // --- CRITICAL: Update the main reply draft with the refined version ---
+      // setReplyDraft(data.refined_reply); // <-- REMOVED THIS LINE
+      // ---
 
     } catch (err) {
       console.error("Error refining reply:", err);
       const errorMsg = err instanceof Error ? err.message : "An unknown error occurred during refinement.";
       setRefinementError(errorMsg);
-      setChatHistory((prev) => [...prev, { sender: "ai", text: `Error: ${errorMsg}` }]);
+      // Add error message to chat history
+      setChatHistory((prev) => [...prev, { sender: "ai", text: `Error refining reply: ${errorMsg}` }]);
     } finally {
       setIsRefining(false);
     }
@@ -239,7 +239,7 @@ export default function MailPage() {
   };
 
   return (
-    <div className="flex flex-col flex-1">
+    <div className="flex flex-col flex-1 overflow-hidden">
       {/* Page Header Removed */}
       {/*
       <div className="px-6">
@@ -357,7 +357,7 @@ export default function MailPage() {
             {/* Bottom Section: AI Reply Draft */}
             <ResizablePanel defaultSize={50} minSize={30}>
               <div className="flex flex-col h-full p-4">
-                <h2 className="text-xl font-semibold mb-2">Draft</h2>
+                <h2 className="text-xl font-semibold mb-2">Reply</h2>
                 <div className="flex-1 mb-4 border rounded p-2 bg-background">
                   <textarea
                     className="w-full h-full resize-none border-none outline-none bg-transparent text-sm"
@@ -383,41 +383,57 @@ export default function MailPage() {
         <ResizableHandle withHandle />
 
         {/* Right Pane: Refinement Chat Sidebar */}
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={40}>
-           <div className="flex flex-col h-full p-4">
-             <h2 className="text-xl font-semibold mb-4 border-b pb-2">Refine Reply</h2>
-             <ScrollArea className="flex-1 mb-4 pr-4"> {/* Added pr-4 for scrollbar */}
-               {chatHistory.length === 0 && !isRefining && (
-                 <p className="text-sm text-muted-foreground text-center mt-4">
-                   Generate a reply first, then ask for refinements here (e.g., "Make it shorter", "Sound more formal").
-                 </p>
-               )}
-               {chatHistory.map((msg, index) => (
-                 <div
-                   key={index}
-                   className={`mb-3 p-2 rounded-lg max-w-[85%] ${
-                     msg.sender === "user"
-                       ? "bg-primary text-primary-foreground ml-auto"
-                       : "bg-muted mr-auto"
-                   }`}
-                 >
-                   <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-                 </div>
-               ))}
-               {isRefining && (
-                 <div className="mb-3 p-2 rounded-lg max-w-[85%] bg-muted mr-auto flex items-center">
-                    <Loader2 className="h-4 w-4 animate-spin mr-2"/>
-                    <span className="text-sm">Thinking...</span>
-                 </div>
-               )}
-               {refinementError && (
-                 <div className="mb-3 p-2 rounded-lg max-w-[85%] bg-destructive/20 text-destructive-foreground mr-auto">
-                    <p className="text-sm font-semibold">Error</p>
-                    <p className="text-sm whitespace-pre-wrap">{refinementError}</p>
-                 </div>
-               )}
-             </ScrollArea>
-             <div className="mt-auto flex items-center gap-2 pt-4 border-t">
+        <ResizablePanel
+          defaultSize={30}
+          minSize={20}
+          maxSize={40}
+          className="min-h-0"
+        >
+           {/* Main container: Flex column */}
+           <div className="flex flex-col">
+             {/* Header: Fixed height, padding, prevent shrinking */}
+             <h2 className="text-xl font-semibold mb-4 border-b pb-2 px-4 pt-4 flex-shrink-0">Refine Reply</h2>
+
+             {/* Scrollable Chat Area - Applied directly to this div */}
+             <div className="flex-1 min-h-0 overflow-y-auto px-4">
+               <div className="space-y-3 mb-4">
+                 {chatHistory.length === 0 && !isRefining && (
+                   <p className="text-sm text-muted-foreground text-center mt-4">
+                     Generate a reply first, then ask for refinements here (e.g., "Make it shorter", "Sound more formal").
+                   </p>
+                 )}
+
+                 {chatHistory.map((msg, index) => (
+                   <div
+                     key={index}
+                     className={`p-2 rounded-lg max-w-[85%] ${
+                       msg.sender === "user"
+                         ? "bg-primary text-primary-foreground ml-auto"
+                         : "bg-muted mr-auto"
+                     }`}
+                   >
+                     <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                   </div>
+                 ))}
+
+                 {isRefining && (
+                   <div className="p-2 rounded-lg max-w-[85%] bg-muted mr-auto flex items-center">
+                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                     <span className="text-sm">Thinking...</span>
+                   </div>
+                 )}
+
+                 {refinementError && (
+                   <div className="p-2 rounded-lg max-w-[85%] bg-destructive/20 text-destructive-foreground mr-auto">
+                     <p className="text-sm font-semibold">Error</p>
+                     <p className="text-sm whitespace-pre-wrap">{refinementError}</p>
+                   </div>
+                 )}
+               </div>
+             </div>
+
+             {/* Input Area: Fixed height, pushed to bottom, prevent shrinking */}
+             <div className="flex items-center gap-2 pt-4 border-t px-4 pb-4 flex-shrink-0">
                <Input
                  placeholder="Type refinement instruction..."
                  value={refinementInput}

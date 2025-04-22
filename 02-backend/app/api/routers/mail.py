@@ -3,7 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_vertex # Assuming get_vertex exists in deps.py
 from app.services.vertex import VertexClient
-from app.models.domain import GenerateReplyRequest, GenerateReplyResponse
+from app.models.domain import (
+    GenerateReplyRequest,
+    GenerateReplyResponse,
+    RefineReplyRequest,
+    RefineReplyResponse
+)
 
 router = APIRouter(prefix="/api", tags=["mail"]) # Using /api prefix as in frontend
 
@@ -45,3 +50,51 @@ async def generate_email_reply(
         logging.error(f"Error generating email reply: {e}", exc_info=True)
         # Provide a more generic error to the client for security
         raise HTTPException(status_code=500, detail="Failed to generate email reply.")
+
+
+# --- New Refinement Endpoint ---
+@router.post("/refine-reply", response_model=RefineReplyResponse)
+async def refine_email_reply(
+    body: RefineReplyRequest,
+    vertex: VertexClient = Depends(get_vertex)
+):
+    """
+    Receives original email, current draft, and an instruction,
+    then refines the draft using an LLM.
+    """
+    try:
+        logging.info(f"Refining reply draft based on instruction: '{body.instruction}'")
+
+        # --- Construct the Prompt for Refinement ---
+        # This prompt needs to provide all necessary context to the LLM.
+        prompt = f"""
+        You are editing an email reply draft.
+        Here is the original email received:
+
+        --- ORIGINAL EMAIL START ---
+        {body.email_content}
+        --- ORIGINAL EMAIL END ---
+
+        Here is the current draft of the reply:
+
+        --- CURRENT DRAFT START ---
+        {body.current_draft}
+        --- CURRENT DRAFT END ---
+
+        Please refine the current draft based on the following instruction:
+        Instruction: "{body.instruction}"
+
+        Output only the refined reply body, without any extra explanations, preamble, or signature.
+        Ensure the refined reply still appropriately addresses the original email.
+        """
+
+        # --- Generate Refined Reply using Vertex AI ---
+        refined_reply_text = await vertex.generate_answer(prompt)
+
+        logging.info(f"Refined reply: '{refined_reply_text[:100]}...'")
+
+        return RefineReplyResponse(refined_reply=refined_reply_text)
+
+    except Exception as e:
+        logging.error(f"Error refining email reply: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to refine email reply.")

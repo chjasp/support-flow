@@ -73,3 +73,12 @@ class GenerateReplyRequest(BaseModel):
 
 class GenerateReplyResponse(BaseModel):
     reply: str
+
+# --- Mail Refinement Models ---
+class RefineReplyRequest(BaseModel):
+    email_content: str
+    current_draft: str
+    instruction: str
+
+class RefineReplyResponse(BaseModel):
+    refined_reply: str
