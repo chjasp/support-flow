@@ -9,6 +9,7 @@ from .vertex import VertexClient
 from .firestore import FirestoreRepository
 from .storage import read_text_from_gcs
 from app.config import get_settings
+from app.services.vertex import VertexClient as VertexClientService
 
 _cfg = get_settings()
 
@@ -16,10 +17,13 @@ class DocumentPipeline:
     """Processes PDFs & text files and performs hybrid search."""
 
     def __init__(self,
-                 vertex: VertexClient,
-                 repo: FirestoreRepository) -> None:
-        self.vertex = vertex
+                 settings,
+                 repo: FirestoreRepository,
+                 vertex: VertexClientService) -> None:
+        self.settings = settings
         self.repo = repo
+        self.vertex = vertex
+        self.splitter = split
 
     # ------------------------------------------------------------------ #
     # ingest                                                             #
@@ -39,7 +43,7 @@ class DocumentPipeline:
         return doc_id
 
     async def _chunk_and_summarise(self, text: str) -> List[Dict[str, Any]]:
-        chunks_raw = split(text)
+        chunks_raw = self.splitter(text)
         chunks = []
         for i, c in enumerate(chunks_raw):
             summary = await self.vertex.summarise(c)
@@ -67,3 +71,19 @@ class DocumentPipeline:
                   "If context is insufficient, say so.\n\nContext:\n---\n{ctx}\n---\n\n"
                   "Question: {q}\n\nAnswer (Markdown):").format(ctx=ctx, q=query)
         return await self.vertex.generate_answer(prompt)
+
+    async def summarise_chunk(self, text: str) -> str:
+        """Summarises a text chunk using the Vertex AI client."""
+        return await self.vertex.summarise(text)
+
+    async def process_document(self, doc_id: str, gcs_uri: str, file_type: str):
+        # ... existing code ...
+        try:
+            # ... existing code ...
+            if file_type == "application/pdf":
+                # Use the stored VertexClient instance
+                extracted_text = await self.vertex.extract_pdf(gcs_uri)
+            # ... rest of the method ...
+        except Exception as e:
+            logging.error(f"Error processing document: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to process document.")

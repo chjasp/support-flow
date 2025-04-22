@@ -66,3 +66,10 @@ class NewChatResponse(BaseModel):
     messages: List[ChatMessage] = []
     createdAt: Optional[datetime.datetime] = None
     lastActivity: Optional[datetime.datetime] = None
+
+# --- Mail Generation Models ---
+class GenerateReplyRequest(BaseModel):
+    email_content: str
+
+class GenerateReplyResponse(BaseModel):
+    reply: str
