@@ -39,7 +39,7 @@ export default function RootLayout({
               <MainNav />
             </div>
           </header>
-          <main className="flex-1 container max-w-screen-2xl pt-6">
+          <main className="flex flex-1 container max-w-screen-2xl pt-6">
             {children}
           </main>
         </div>
