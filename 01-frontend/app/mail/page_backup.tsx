@@ -239,7 +239,7 @@ export default function MailPage() {
   };
 
   return (
-    <div className="flex flex-col p-4 h-[calc(100vh-theme(space.14)-theme(space.6))]">
+    <div className="flex flex-col flex-1 overflow-hidden">
       {/* Page Header Removed */}
       {/*
       <div className="px-6">
@@ -384,15 +384,14 @@ export default function MailPage() {
 
         {/* Right Pane: Refinement Chat Sidebar */}
         <ResizablePanel defaultSize={30} minSize={20} maxSize={40}>
-           {/* Main container: Flex column, full height */}
-           <div className="flex flex-col h-full">
+           {/* Main container: Flex column */}
+           <div className="flex flex-col h-full overflow-hidden">
              {/* Header: Fixed height, padding, prevent shrinking */}
              <h2 className="text-xl font-semibold mb-4 border-b pb-2 px-4 pt-4 flex-shrink-0">Refine Reply</h2>
 
-             {/* Scrollable Chat Area: Takes remaining space, allows vertical scroll */}
-             <div className="flex-1 min-h-0 overflow-y-auto px-4">
-               {/* Added pb-4 for spacing at the bottom of the scrollable content */}
-               <div className="space-y-3 pb-4">
+             {/* Scrollable Chat Area - Added overflow-y-auto to enable vertical scrolling */}
+             <div className="flex-1 min-h-0 mb-4 px-4 overflow-y-auto">
+               <div className="space-y-3 mb-4">
                  {chatHistory.length === 0 && !isRefining && (
                    <p className="text-sm text-muted-foreground text-center mt-4">
                      Generate a reply first, then ask for refinements here (e.g., "Make it shorter", "Sound more formal").
