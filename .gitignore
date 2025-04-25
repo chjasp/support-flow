@@ -7,3 +7,19 @@ __pycache__/
 
 *.tfvars
 kb-key.json
+
+# Terraform files
+.terraform/
+.terraform.lock.hcl
+crash.log
+*.tfplan
+*.tfstate
+*.tfstate.backup
+*.tfvars
+*.tfvars.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+*.tfvars.json.bak

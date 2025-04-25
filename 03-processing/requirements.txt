@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+tiktoken
+google-cloud-storage
+google-cloud-aiplatform
+cloud-sql-python-connector[pg8000] 
+pgvector
