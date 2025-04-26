@@ -1,36 +1,33 @@
 import os, uuid, logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_pipeline, get_repo
-from app.services.pipeline import DocumentPipeline
-from app.services.firestore import FirestoreRepository
+from app.api.deps import get_sql_repo
+from app.services.cloudsql import CloudSqlRepository
 from app.models.domain import DocumentItem
-from app.models.api_io import ProcessFileRequest
 
 router = APIRouter(prefix="", tags=["documents"])
 
-@router.post("/process-file", status_code=status.HTTP_202_ACCEPTED)
-async def process_file(req: ProcessFileRequest,
-                       tasks: BackgroundTasks,
-                       pipeline: DocumentPipeline = Depends(get_pipeline)):
-    file_lower = req.gcs_uri.lower()
-    if file_lower.endswith('.pdf'):
-        tasks.add_task(pipeline.process_pdf, req.gcs_uri, original_name=req.original_filename)
-    elif file_lower.endswith('.txt'):
-        tasks.add_task(pipeline.process_text, req.gcs_uri, original_name=req.original_filename)
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported file type")
-    return {"message": "accepted"}
-
 @router.get("/documents", response_model=list[DocumentItem])
-async def list_documents(repo: FirestoreRepository = Depends(get_repo)):
-    return repo.list_documents()
+async def list_documents(repo: CloudSqlRepository = Depends(get_sql_repo)):
+    """Lists documents and their status from Cloud SQL."""
+    try:
+        return repo.list_documents()
+    except Exception as e:
+        logging.error(f"Failed to list documents from Cloud SQL: {e}", exc_info=True)
+        # Consider more specific error handling based on repo exceptions
+        raise HTTPException(status_code=500, detail="Failed to retrieve document list.")
 
 @router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(doc_id: str,
-                          repo: FirestoreRepository = Depends(get_repo)):
+                          repo: CloudSqlRepository = Depends(get_sql_repo)):
+    """Deletes a document record from Cloud SQL."""
     try:
         repo.delete_document(doc_id)
-    except KeyError:
+    except KeyError: # Raised by repo if not found
         raise HTTPException(status_code=404, detail="Document not found")
-    return
+    except ValueError: # Raised by repo if UUID format is invalid
+        raise HTTPException(status_code=400, detail="Invalid document ID format.")
+    except Exception as e:
+        logging.error(f"Failed to delete document {doc_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete document.")
+    # No return needed on 204

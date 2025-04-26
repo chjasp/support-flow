@@ -10,7 +10,11 @@ CREATE TABLE IF NOT EXISTS documents (
     filename TEXT NOT NULL,
     original_gcs TEXT,
     processed_gcs TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    gcs_generation BIGINT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'Processing' CHECK (status IN ('Processing', 'Ready', 'Failed')),
+    error_message TEXT,
+    CONSTRAINT unique_document_version UNIQUE (original_gcs, gcs_generation)
 );
 
 -- Create the chunks table (adjust vector dimensions)

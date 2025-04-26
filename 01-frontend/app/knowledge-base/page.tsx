@@ -75,16 +75,15 @@ export default function KnowledgeBasePage() {
           `Failed to fetch items: ${response.status} ${response.statusText} - ${errorText}`
         );
       }
-      const data: KnowledgeItem[] = await response.json();
-      // console.log("Fetched items:", data); // You can keep or remove this log
+      const data: any[] = await response.json(); // Use any[] temporarily for flexibility
 
-      // Ensure IDs are strings (or handle potential non-string IDs if necessary)
       const processedData = data.map(item => ({
         ...item,
-        id: String(item.id) // Explicitly cast ID to string if needed
+        id: String(item.id), // Ensure ID is string
+        uploadError: item.errorMessage || undefined // Map backend 'errorMessage' to frontend 'uploadError'
       }));
 
-      setKnowledgeItems(processedData);
+      setKnowledgeItems(processedData as KnowledgeItem[]); // Cast back to KnowledgeItem[]
 
     } catch (error) {
       console.error("Error fetching knowledge items:", error);
@@ -556,7 +555,9 @@ export default function KnowledgeBasePage() {
                               ? `Doc (${item.fileType || "?"})`
                               : "Text"}
                           </TableCell>
-                          <TableCell>{item.dateAdded}</TableCell>
+                          <TableCell>
+                            {item.dateAdded.split("T")[0]}
+                          </TableCell>
                           <TableCell>
                             <span
                               className={`px-2 py-1 rounded-full text-xs font-medium flex items-center w-fit ${

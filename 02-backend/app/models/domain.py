@@ -16,9 +16,10 @@ class DocumentItem(BaseModel):
     name: str
     type: str
     fileType: Optional[str] = None
-    dateAdded: datetime.datetime | str
+    dateAdded: str
     status: str
     gcsUri: Optional[str] = None
+    errorMessage: Optional[str] = None
 
     @validator('dateAdded', pre=True, always=True)
     def ensure_datetime_or_iso(cls, v):

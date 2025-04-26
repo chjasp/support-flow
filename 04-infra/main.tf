@@ -55,6 +55,13 @@ resource "google_storage_bucket" "raw" {
   name                        = "${var.project_id}-docs-raw"
   location                    = var.region
   uniform_bucket_level_access = true
+
+  cors {
+    origin          = ["http://localhost:3000", "https://your-nextjs-app-*.a.run.app"]
+    method          = ["GET", "PUT"]
+    response_header = ["Content-Type", "Content-Length", "x-goog-meta-originalfilename"]
+    max_age_seconds = 3600
+  }
 }
 
 resource "google_storage_bucket" "processed" {
@@ -108,13 +115,18 @@ resource "google_sql_database_instance" "pg" {
 
   settings {
     tier = "db-custom-1-3840"
-    edition = "ENTERPRISE" 
+    edition = "ENTERPRISE"
 
     ip_configuration {
       ssl_mode                                      = "ENCRYPTED_ONLY"
-      ipv4_enabled                                  = false
+      ipv4_enabled                                  = true
       private_network                               = google_compute_network.vpc.id
       enable_private_path_for_google_cloud_services = true
+
+      authorized_networks {
+        value = var.local_dev_ip
+        name  = "local-dev"
+      }
     }
   }
 
@@ -223,8 +235,8 @@ resource "google_cloud_run_v2_service" "document-ingester" {
 
       resources {
         limits = {
-          cpu    = "1"
-          memory = "512Mi"
+          cpu    = "2"
+          memory = "4Gi"
         }
       }
     }
@@ -392,7 +404,6 @@ resource "google_storage_bucket_iam_member" "dlq_bucket_writer" {
   depends_on = [google_storage_bucket.dlq_bucket]
 }
 
-# --- Add this resource ---
 # Grant Pub/Sub service account permission to read bucket metadata for DLQ
 resource "google_storage_bucket_iam_member" "dlq_bucket_reader" {
   bucket = google_storage_bucket.dlq_bucket.name
@@ -401,7 +412,6 @@ resource "google_storage_bucket_iam_member" "dlq_bucket_reader" {
 
   depends_on = [google_storage_bucket.dlq_bucket]
 }
-# -------------------------
 
 # Grant Eventarc service agent permission to publish to the DLQ topic
 resource "google_pubsub_topic_iam_member" "eventarc_dlq_publisher" {
@@ -413,3 +423,15 @@ resource "google_pubsub_topic_iam_member" "eventarc_dlq_publisher" {
   depends_on = [google_pubsub_topic.dlq_topic]
 }
 
+# --- Add Pub/Sub Service Account permissions on DLQ Topic ---
+# Grant Pub/Sub SA permission to publish dead-lettered messages TO the DLQ topic
+resource "google_pubsub_topic_iam_member" "pubsub_dlq_publisher" {
+  project = google_pubsub_topic.dlq_topic.project
+  topic   = google_pubsub_topic.dlq_topic.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+  depends_on = [google_pubsub_topic.dlq_topic]
+}
+
+# Add subscriber manually to the eventarc subscription

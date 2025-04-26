@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.deps import get_vertex # Assuming get_vertex exists in deps.py
+from app.api.deps import get_vertex
 from app.services.vertex import VertexClient
 from app.models.domain import (
     GenerateReplyRequest,
@@ -23,10 +23,6 @@ async def generate_email_reply(
     try:
         logging.info(f"Generating reply for email content: '{body.email_content[:100]}...'")
 
-        # --- Construct the Prompt ---
-        # This prompt guides the LLM to act as a helpful customer service agent.
-        # You can customize this extensively based on your specific needs,
-        # desired tone, and available context.
         prompt = f"""
         You are a helpful and professional customer service assistant.
         A customer sent the following email:
