@@ -4,86 +4,44 @@ from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
-from app.utils.chunking import split
 from .vertex import VertexClient
 from .firestore import FirestoreRepository
-from .storage import read_text_from_gcs
 from app.config import get_settings
-from app.services.vertex import VertexClient as VertexClientService
 
 _cfg = get_settings()
 
 class DocumentPipeline:
-    """Processes PDFs & text files and performs hybrid search."""
+    """Handles RAG retrieval and answer generation."""
 
     def __init__(self,
                  settings,
                  repo: FirestoreRepository,
-                 vertex: VertexClientService) -> None:
+                 vertex: VertexClient) -> None:
         self.settings = settings
         self.repo = repo
         self.vertex = vertex
-        self.splitter = split
-
-    # ------------------------------------------------------------------ #
-    # ingest                                                             #
-    # ------------------------------------------------------------------ #
-    async def process_pdf(self, gcs_uri: str, *, original_name: str) -> str:
-        doc_id = uuid.uuid4().hex
-        text = await self.vertex.extract_pdf(gcs_uri)
-        chunks = await self._chunk_and_summarise(text)
-        self.repo.save_document(doc_id, original_name, "PDF", gcs_uri, chunks)
-        return doc_id
-
-    async def process_text(self, gcs_uri: str, *, original_name: str) -> str:
-        doc_id = uuid.uuid4().hex
-        text = await read_text_from_gcs(gcs_uri)
-        chunks = await self._chunk_and_summarise(text)
-        self.repo.save_document(doc_id, original_name, "TEXT", gcs_uri, chunks)
-        return doc_id
-
-    async def _chunk_and_summarise(self, text: str) -> List[Dict[str, Any]]:
-        chunks_raw = self.splitter(text)
-        chunks = []
-        for i, c in enumerate(chunks_raw):
-            summary = await self.vertex.summarise(c)
-            chunks.append({
-                "chunk_text": c,
-                "summary": summary,
-                "chunk_order": i
-            })
-        return chunks
 
     # ------------------------------------------------------------------ #
     # retrieval                                                          #
     # ------------------------------------------------------------------ #
     async def hybrid_search(self, query: str) -> List[Dict[str, Any]]:
-        kw_results = self.repo.keyword_search(query, max_results=20)
-        # simple version: use keyword results directly if <max_context
-        return kw_results[:_cfg.max_context_chunks]
+        logging.warning("Hybrid search is currently not implemented. Returning empty results.")
+        return []
 
     async def answer(self, query: str, context_chunks: List[Dict[str, Any]]) -> str:
         if not context_chunks:
             prompt = f"Answer the question using general knowledge.\n\nQuestion: {query}\n\nAnswer (Markdown):"
             return await self.vertex.generate_answer(prompt)
-        ctx = "\n---\n".join(c["chunk_text"] for c in context_chunks)
+
+        ctx_texts = [c.get("chunk_text", "") for c in context_chunks]
+        valid_ctx_texts = [text for text in ctx_texts if text]
+        if not valid_ctx_texts:
+            logging.warning("Received context chunks but couldn't extract text. Falling back to general knowledge.")
+            prompt = f"Answer the question using general knowledge.\n\nQuestion: {query}\n\nAnswer (Markdown):"
+            return await self.vertex.generate_answer(prompt)
+
+        ctx = "\n---\n".join(valid_ctx_texts)
         prompt = ("Answer the user's question based on the context below. "
                   "If context is insufficient, say so.\n\nContext:\n---\n{ctx}\n---\n\n"
                   "Question: {q}\n\nAnswer (Markdown):").format(ctx=ctx, q=query)
         return await self.vertex.generate_answer(prompt)
-
-    async def summarise_chunk(self, text: str) -> str:
-        """Summarises a text chunk using the Vertex AI client."""
-        return await self.vertex.summarise(text)
-
-    async def process_document(self, doc_id: str, gcs_uri: str, file_type: str):
-        # ... existing code ...
-        try:
-            # ... existing code ...
-            if file_type == "application/pdf":
-                # Use the stored VertexClient instance
-                extracted_text = await self.vertex.extract_pdf(gcs_uri)
-            # ... rest of the method ...
-        except Exception as e:
-            logging.error(f"Error processing document: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to process document.")

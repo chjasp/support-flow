@@ -4,3 +4,4 @@ variable "ingester_image_path" { type = string }
 variable "model_region" { type = string }
 variable "embed_model" { type = string }
 variable "gemini_model" { type = string }
+variable "local_dev_ip" { type = string }

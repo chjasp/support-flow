@@ -9,119 +9,21 @@ from google.api_core.exceptions import NotFound
 from app.config import get_settings
 from app.models.domain import ChatMessage, ChatMetadata # Import chat models
 
-_STOPWORDS = {"a","an","the","is","in","it","of","for","on","with"}
 _DEFAULT_CHAT_TITLE = "New Chat"
 
 class FirestoreRepository:
+    """Repository for interacting with Chat data in Firestore."""
     def __init__(self) -> None:
         cfg = get_settings()
         logging.info("Initialising Firestore client …")
         self._db = firestore.Client(project=cfg.gcp_project)
-        self._max_ctx = cfg.max_context_chunks
         self._chats_coll = self._db.collection("chats") # Chat collection reference
-        self._docs_coll = self._db.collection("documents") # Document collection reference
 
     # --------------------------------------------------------------------- #
-    # document & chunk persistence
+    # document persistence methods removed
+    # (save_document_metadata, list_documents, delete_document)
     # --------------------------------------------------------------------- #
-    def save_document(self,
-                      doc_id: str,
-                      source_name: str,
-                      doc_type: str,
-                      gcs_uri: str | None,
-                      chunks: List[Dict[str, Any]],
-                      status: str = "Processing") -> None:
-        doc_data = {
-            "source_name": source_name,
-            "document_type": doc_type,
-            "timestamp": firestore.SERVER_TIMESTAMP,
-            "chunk_count": len(chunks),
-            "status": status
-        }
-        if gcs_uri:
-            doc_data["gcs_uri"] = gcs_uri
 
-        doc_ref = self._docs_coll.document(doc_id)
-        doc_ref.set(doc_data, merge=True)
-
-        if chunks:
-            batch = self._db.batch()
-            for c in chunks:
-                chunk_ref = doc_ref.collection("chunks").document(f"chunk_{c['chunk_order']}")
-                batch.set(chunk_ref, {
-                    "chunk_text": c["chunk_text"],
-                    "summary": c["summary"],
-                    "chunk_order": c["chunk_order"]
-                })
-            batch.commit()
-            doc_ref.update({"status": "Ready"})
-        else:
-            doc_ref.update({"status": "Ready", "chunk_count": 0})
-
-    # --------------------------------------------------------------------- #
-    # search helpers
-    # --------------------------------------------------------------------- #
-    def keyword_search(self, query: str, max_results: int = 20) -> List[Dict[str, Any]]:
-        tokens = [w for w in re.findall(r"\b\w+\b", query.lower()) if w not in _STOPWORDS]
-        if not tokens:
-            return []
-
-        results: List[Dict[str, Any]] = []
-        for chunk in self._db.collection_group("chunks").stream():
-            data = chunk.to_dict()
-            txt = data.get("chunk_text", "").lower()
-            score = sum(1 for t in tokens if t in txt)
-            if score:
-                doc_ref = chunk.reference.parent.parent
-                if doc_ref and doc_ref.parent.id == "documents": # Ensure it's from the documents collection
-                    doc_id = doc_ref.id
-                    results.append({
-                        "doc_id": doc_id,
-                        "chunk_id": chunk.id,
-                        "chunk_text": data.get("chunk_text", ""),
-                        "summary": data.get("summary", ""),
-                        "chunk_order": data.get("chunk_order", -1),
-                        "keyword_score": score
-                    })
-        results.sort(key=lambda x: x["keyword_score"], reverse=True)
-        return results[:max_results]
-
-    # --------------------------------------------------------------------- #
-    # listing / deletion
-    # --------------------------------------------------------------------- #
-    def list_documents(self) -> List[Dict[str, Any]]:
-        docs_stream = self._docs_coll.order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
-        items = []
-        for doc in docs_stream:
-            d = doc.to_dict()
-            ts = d.get("timestamp")
-            date_added = str(ts) # Default
-            if isinstance(ts, _dt.datetime):
-                # Ensure timezone awareness or convert to UTC if needed
-                date_added = ts.isoformat() # Use ISO format for consistency
-
-            file_type = None
-            if d.get("document_type") == "PDF" and '.' in d.get("source_name", ""):
-                file_type = d["source_name"].split('.')[-1].upper()
-            items.append({
-                "id": doc.id,
-                "name": d.get("source_name", "Untitled"),
-                "type": "Document" if d.get("document_type") == "PDF" else "Pasted Text",
-                "fileType": file_type,
-                "dateAdded": date_added,
-                "status": d.get("status", "Unknown"),
-                "gcsUri": d.get("gcs_uri")
-            })
-        return items
-
-    def delete_document(self, doc_id: str) -> None:
-        doc_ref = self._docs_coll.document(doc_id)
-        if not doc_ref.get().exists:
-            raise KeyError(f"Document {doc_id} not found")
-        # delete chunks
-        for chunk in doc_ref.collection("chunks").stream():
-            chunk.reference.delete()
-        doc_ref.delete()
 
     # --------------------------------------------------------------------- #
     # Chat Persistence

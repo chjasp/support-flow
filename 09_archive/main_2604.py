@@ -241,8 +241,7 @@ def _process_blob(
 ) -> dict:
     """Main orchestration for a single GCS object generation."""
     gcs_path = f"gs://{bucket_name}/{object_name}"
-    # Keep the GCS object name for logging/reference if needed
-    gcs_object_filename = Path(object_name).name
+    filename = Path(object_name).name
 
     with _connect() as conn:
         # Idempotency / race‑condition handling
@@ -252,57 +251,25 @@ def _process_blob(
             if status in {"Ready", "Failed", "Processing"}:
                 logger.info("Skipping %s (gen %s); status=%s", gcs_path, generation, status)
                 return {"status": "skipped", "doc_id": str(doc_id), "reason": status}
-        # else: # No need for else, proceed to fetch blob metadata first
+        else:
+            doc_id = uuid.uuid4()
+            try:
+                _insert_initial(conn, doc_id, filename, gcs_path, generation)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                # Assume unique constraint == race condition
+                logger.warning("Race inserting initial record: %s", e)
+                return {"status": "skipped", "reason": "race"}
 
-    # Fetch blob *before* inserting initial record to get metadata
+    # At this point we own processing for this doc_id
     temp_dir = Path(tempfile.mkdtemp())
-    original_filename = gcs_object_filename # Default fallback
     try:
         blob = storage_client.bucket(bucket_name).get_blob(object_name, generation=generation)
         if not blob:
-            raise FileNotFoundError(f"Blob not found: {gcs_path} (gen {generation})")
+            raise FileNotFoundError("Blob (generation) not found")
 
-        # --- Get Original Filename from Metadata ---
-        metadata = blob.metadata or {}
-        # GCS converts x-goog-meta-originalfilename to 'originalfilename' key
-        original_filename = metadata.get("originalfilename", gcs_object_filename)
-        logger.info(f"Using original filename from metadata: {original_filename}")
-        # -----------------------------------------
-
-        # Now handle DB insertion/check again with the correct filename
-        with _connect() as conn:
-            existing = _fetch_existing(conn, gcs_path, generation)
-            if existing: # Re-check after getting blob info, in case of race condition
-                 doc_id, status = existing
-                 if status in {"Ready", "Failed", "Processing"}:
-                    logger.info("Skipping %s (gen %s); status=%s (checked after metadata fetch)", gcs_path, generation, status)
-                    # Clean up temp dir created earlier if skipping now
-                    try:
-                        for p in temp_dir.iterdir(): p.unlink()
-                        temp_dir.rmdir()
-                    except OSError as e: logger.warning("Failed to clean temp dir %s: %s", temp_dir, e)
-                    return {"status": "skipped", "doc_id": str(doc_id), "reason": status}
-                 # If status is not final, proceed with this doc_id
-            else:
-                doc_id = uuid.uuid4()
-                try:
-                    # Use original_filename here
-                    _insert_initial(conn, doc_id, original_filename, gcs_path, generation)
-                    conn.commit()
-                    logger.info(f"Inserted initial record for doc_id {doc_id} with filename {original_filename}")
-                except Exception as e:
-                    conn.rollback()
-                    logger.warning("Race inserting initial record: %s", e)
-                    # Clean up temp dir created earlier if skipping now
-                    try:
-                        for p in temp_dir.iterdir(): p.unlink()
-                        temp_dir.rmdir()
-                    except OSError as e: logger.warning("Failed to clean temp dir %s: %s", temp_dir, e)
-                    return {"status": "skipped", "reason": "race"}
-
-
-        # At this point we own processing for this doc_id
-        local_raw = temp_dir / gcs_object_filename # Download using the actual object name
+        local_raw = temp_dir / filename
         blob.download_to_filename(str(local_raw))
         pdf_path = _ensure_pdf(local_raw)
         pages = _gemini_extract(pdf_path)
@@ -318,33 +285,18 @@ def _process_blob(
         logger.info("%s produced %d chunks", doc_id, len(chunks))
 
         with _connect() as conn:
-            # Use original_filename here too
-            _upsert_success(conn, doc_id, original_filename, gcs_path, processed_gcs_path, chunks, vectors)
+            _upsert_success(conn, doc_id, filename, gcs_path, processed_gcs_path, chunks, vectors)
             conn.commit()
-            logger.info(f"Successfully processed and updated record for doc_id {doc_id} with filename {original_filename}")
 
         return {"status": "ok", "doc_id": str(doc_id)}
 
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}"
-        logger.error("Processing failed for %s (gen %s): %s", gcs_path, generation, error_msg)
+        logger.error("Processing failed: %s", error_msg)
         logger.debug(traceback.format_exc())
-        # Ensure doc_id is defined even if error happened before assignment
-        doc_id_for_error = 'unknown'
-        try:
-            doc_id_for_error = doc_id # Use the assigned doc_id if available
-        except NameError:
-             # If error occurred before doc_id assignment (e.g., blob fetch failed without existing record)
-             # We might not have a doc_id to update. Log this.
-             logger.warning("Could not determine doc_id to update status to Failed.")
-             # Optionally, you could try inserting a 'Failed' record here if critical,
-             # but it might lead to duplicates if the initial insert race happened.
-
-        if 'doc_id' in locals() or 'doc_id_for_error' != 'unknown': # Check if we have a doc_id
-             with _connect() as conn:
-                 _update_status(conn, doc_id_for_error, "Failed", error_msg)
-                 conn.commit()
-        # Re-raise as HTTPException for Cloud Functions/Run
+        with _connect() as conn:
+            _update_status(conn, doc_id, "Failed", error_msg)
+            conn.commit()
         raise HTTPException(status_code=500, detail=error_msg) from exc
     finally:
         # cleanup
