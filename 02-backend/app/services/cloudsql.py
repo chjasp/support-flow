@@ -77,7 +77,14 @@ class CloudSqlRepository:
                     if filename and '.' in filename:
                         file_type_display = filename.split('.')[-1].upper()
 
-                    display_type = "Document" if file_type_display in ["PDF", "DOCX", "TXT"] else "Unknown"
+                    # Determine display type based on common document extensions
+                    if file_type_display in ["PDF", "DOCX", "TXT", "MD"]: # Added MD
+                        display_type = "Document"
+                    elif file_type_display: # If there's an extension but not recognized doc
+                         display_type = f"{file_type_display} File"
+                    else: # No extension
+                        display_type = "Unknown"
+
 
                     items.append(DocumentItem(
                         id=str(doc_id),
@@ -114,7 +121,7 @@ class CloudSqlRepository:
                     if cur.fetchone() is None:
                          raise KeyError(f"Document with ID {doc_id} not found in Cloud SQL.")
 
-                    # Delete the document
+                    # Delete the document (CASCADE should handle chunks)
                     cur.execute("DELETE FROM documents WHERE id = %s", (doc_uuid,))
                     logging.info(f"Attempting to delete document {doc_id} from Cloud SQL.")
 
@@ -141,3 +148,57 @@ class CloudSqlRepository:
             # except Exception as rb_err:
             #     logging.error(f"Error during rollback attempt for {doc_id}: {rb_err}")
             raise # Re-raise for the endpoint handler
+
+    def vector_search(self, query_vector: List[float], limit: int) -> List[Dict[str, Any]]:
+        """Performs vector similarity search on the chunks table."""
+        results = []
+        cur = None
+        # Convert the Python list vector to the string format expected by pgvector/pg8000
+        vector_string = str(query_vector)
+
+        # Use L2 distance (<->) for models like text-embedding-004.
+        # Use cosine distance (<=>) if your model prefers it. Check model docs.
+        # text-embedding-004 uses cosine similarity, so <=> is appropriate.
+        sql = """
+            SELECT
+                c.id,
+                c.doc_id,
+                c.chunk_index,
+                c.text,
+                d.filename as doc_filename,
+                c.embedding <=> %s::vector AS distance
+            FROM chunks c
+            JOIN documents d ON c.doc_id = d.id
+            WHERE d.status = 'Ready' -- Only search ready documents
+            ORDER BY distance ASC -- ASC because <=> is distance (smaller is better)
+            LIMIT %s
+        """
+        try:
+            with self._get_conn() as conn:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, (vector_string, limit))
+                    rows = cur.fetchall()
+                    # Get column names from cursor description
+                    colnames = [desc[0] for desc in cur.description]
+                    for row in rows:
+                        row_dict = dict(zip(colnames, row))
+                        # Map to the keys expected by the Chunk model
+                        results.append({
+                            "chunk_id": str(row_dict.get("id")), # Convert DB int ID to string
+                            "doc_id": str(row_dict.get("doc_id")), # Ensure UUID is string
+                            "doc_filename": row_dict.get("doc_filename"),
+                            "chunk_order": row_dict.get("chunk_index"), # Rename key from chunk_index
+                            "chunk_text": row_dict.get("text"),
+                            "summary": "", # Add required summary field (placeholder)
+                            "distance": row_dict.get("distance") # Optional: for debugging/info
+                        })
+                    logging.info(f"Vector search found {len(results)} chunks for limit {limit}")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error during vector search: {e}", exc_info=True)
+            # Don't return partial results on error, let the caller handle it
+            raise
+        return results
