@@ -1,14 +1,14 @@
 import os, uuid, logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_sql_repo
+from app.api.deps import get_cloudsql_repo
 from app.services.cloudsql import CloudSqlRepository
 from app.models.domain import DocumentItem
 
 router = APIRouter(prefix="", tags=["documents"])
 
 @router.get("/documents", response_model=list[DocumentItem])
-async def list_documents(repo: CloudSqlRepository = Depends(get_sql_repo)):
+async def list_documents(repo: CloudSqlRepository = Depends(get_cloudsql_repo)):
     """Lists documents and their status from Cloud SQL."""
     try:
         return repo.list_documents()
@@ -19,7 +19,7 @@ async def list_documents(repo: CloudSqlRepository = Depends(get_sql_repo)):
 
 @router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(doc_id: str,
-                          repo: CloudSqlRepository = Depends(get_sql_repo)):
+                          repo: CloudSqlRepository = Depends(get_cloudsql_repo)):
     """Deletes a document record from Cloud SQL."""
     try:
         repo.delete_document(doc_id)

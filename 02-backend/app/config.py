@@ -6,8 +6,9 @@ class Settings(BaseSettings):
     gcp_project: str
     gcp_location: str
     model_generation: str
+    model_embedding: str
     max_summary_tokens: int
-    max_context_chunks: int
+    max_context_chunks: int = 5
     cors_origins: List[str] = ["http://localhost:3000"]
     google_service_account_json: Optional[str] = None
     gmail_impersonate_email: Optional[str] = None
@@ -23,6 +24,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        env_file_encoding = 'utf-8'
         case_sensitive = True
 
 @lru_cache()

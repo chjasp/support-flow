@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional
+from typing import List, Optional, Literal, Dict
 import datetime
 import logging
 
@@ -46,7 +46,7 @@ class QueryResponse(BaseModel):
 class ChatMessage(BaseModel):
     id: Optional[str] = None
     text: str
-    sender: str = Field(..., pattern="^(user|bot)$")
+    sender: Literal["user", "ai", "bot"]
     timestamp: Optional[datetime.datetime] = None
 
     class Config:
@@ -83,3 +83,47 @@ class RefineReplyRequest(BaseModel):
 
 class RefineReplyResponse(BaseModel):
     refined_reply: str
+
+# --- NEW: Model specifically for adding a refinement message ---
+class AddRefinementMessageRequest(BaseModel):
+    sender: Literal["user", "ai"]
+    text: str
+
+# --- Email Interaction Models (Used for GET response) ---
+class EmailInteractionResponse(BaseModel):
+    id: str
+    replyDraft: Optional[str] = ""
+    refinementHistory: List[ChatMessage] = []
+
+class UpdateDraftRequest(BaseModel):
+    draft: str
+
+# --- Gmail API Models ---
+class EmailHeader(BaseModel):
+    name: str
+    value: str
+
+class EmailMetadata(BaseModel):
+    id: str
+    threadId: str
+    labelIds: List[str] = []
+    snippet: str
+    subject: Optional[str] = None
+    from_address: Optional[str] = Field(None, alias="from")
+    date: Optional[str] = None
+
+    class Config:
+        allow_population_by_field_name = True
+
+class EmailBodyResponse(BaseModel):
+    body: str
+
+# --- Document Processing Models ---
+class ProcessRequest(BaseModel):
+    gcs_uri: str
+    original_filename: Optional[str] = None
+
+class ProcessResponse(BaseModel):
+    document_id: str
+    message: str
+    chunks_processed: int
