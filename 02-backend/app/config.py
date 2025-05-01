@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_embedding: str
     max_summary_tokens: int
     max_context_chunks: int = 5
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = ["http://localhost:3000", "https://YOUR_FRONTEND_CLOUD_RUN_URL"]
     google_service_account_json: Optional[str] = None
     gmail_impersonate_email: Optional[str] = None
 
@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     cloud_sql_pool_min_conn: int = 1
     cloud_sql_pool_max_conn: int = 5
 
+    # --- Add Auth Audience ---
+    auth_google_client_id: str # The Client ID used by the Next.js frontend
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
@@ -29,4 +32,5 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings():
+    # Make sure AUTH_GOOGLE_CLIENT_ID is loaded from .env or environment
     return Settings()

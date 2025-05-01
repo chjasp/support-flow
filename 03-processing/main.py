@@ -9,15 +9,21 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
+import fitz  # PyMuPDF
 import tiktoken
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from google.cloud import storage
 from google.cloud.sql.connector import Connector
+from pydantic import BaseModel
 
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+import google.genai as genai
+from google.genai import types as genai_types
 from vertexai.language_models import TextEmbeddingModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 ###############################################################################
 # Configuration + Globals
@@ -34,7 +40,15 @@ DB_NAME: str = os.environ["CLOUD_SQL_DB"]
 EMBED_MODEL: str = os.environ["EMBED_MODEL"]
 GEMINI_MODEL: str = os.environ["GEMINI_MODEL"]
 
+# initialise Vertex AI **for embeddings only**
 vertexai.init(project=PROJECT_ID, location=LOCATION)
+
+# single Google Generative AI client used everywhere else
+genai_client = genai.Client(
+    vertexai=True,              # keep routing through Vertex endpoint
+    project=PROJECT_ID,
+    location="global",
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,8 +60,31 @@ storage_client = storage.Client(project=PROJECT_ID)
 connector = Connector()
 
 tokenizer = tiktoken.get_encoding("cl100k_base")
-extraction_model = GenerativeModel(GEMINI_MODEL)
+# extraction_model = GenerativeModel(GEMINI_MODEL) # Removed - no longer used
 embedding_model = TextEmbeddingModel.from_pretrained(EMBED_MODEL)
+
+# Define the schema as a dictionary for controlled generation
+PAGE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "page":   {"type": "integer"},
+            "header": {"type": "string"},
+            "body":   {"type": "string"}
+        },
+        "required": ["page", "body"]
+    }
+}
+GEN_CONFIG = genai_types.GenerateContentConfig(
+    response_mime_type="application/json",
+    response_schema=PAGE_SCHEMA,
+    # response_modalities=["TEXT"], # Optional: Specify modality if needed, often inferred
+    temperature=0,
+    top_p=0.1,
+    max_output_tokens=65535 # Adjusted based on common limits, check model specifics if needed
+)
+# -----------------------------------------
 
 app = FastAPI()
 
@@ -113,12 +150,19 @@ def _ensure_pdf(local_path: Path) -> Path:
     if suffix == ".pdf":
         return local_path # Already PDF
 
+    # Check if the target PDF already exists (e.g., from a previous partial run)
     pdf_path = local_path.with_suffix(".pdf")
+    if pdf_path.exists():
+        logger.info(f"Using existing converted PDF: {pdf_path}")
+        return pdf_path
 
     if suffix in {".doc", ".docx"}:
         logger.info(f"Converting {local_path} to PDF...")
         _docx_to_pdf(local_path, pdf_path)
         logger.info(f"Conversion complete: {pdf_path}")
+        # Verify conversion success
+        if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+             raise RuntimeError(f"PDF conversion failed or produced an empty file for {local_path}")
         return pdf_path
 
     # If it's not DOC/DOCX or PDF, return the original path.
@@ -127,35 +171,186 @@ def _ensure_pdf(local_path: Path) -> Path:
     return local_path
 
 
-def _gemini_extract(pdf_path: Path) -> List[dict]:
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
+def _make_part(data: bytes | str, mime_type: str = "text/plain") -> genai_types.Part:
+    """Helper that mirrors Part.from_data from vertexai."""
+    if isinstance(data, bytes):
+        return genai_types.Part(
+            inline_data=genai_types.Blob(
+                mime_type=mime_type,
+                data=data
+            )
+        )
+    else:  # str
+        return genai_types.Part(text=data)
 
-    pdf_part = Part.from_data(data=pdf_bytes, mime_type="application/pdf")
-    prompt = (
-        "You are an expert JSON extraction engine. Produce a single JSON array where each element "
-        "represents one page with keys: page (int), header (string|null), body (string). "
-        "Escape all strings properly. Do not wrap with markdown fences."
-    )
 
-    response = extraction_model.generate_content(
-        [pdf_part, prompt],
-        generation_config={"response_mime_type": "application/json"},
-    )
-
-    cleaned = response.text.strip().lstrip("```json").rstrip("```")
+def _gemini_extract(pdf_part: genai_types.Part) -> list[dict]:
+    """Extracts page data from a PDF part using Gemini with controlled generation."""
     try:
-        data: List[dict] = json.loads(cleaned)
-    except (json.JSONDecodeError, AttributeError) as e:
-        logger.error("Failed to parse Gemini output: %s", e)
-        logger.debug("Gemini raw response: %s", getattr(response, "text", "<none>"))
+        # Simpler prompt, relying on the schema for structure
+        prompt = "Extract each page's content. Include page number, header (if any), and body text."
+
+        # Build a single user message that contains the PDF and the instruction
+        contents = [
+            genai_types.Content(
+                role="user",
+                parts=[pdf_part, _make_part(prompt)] # Use helper for the text part
+            )
+        ]
+
+        resp = genai_client.models.generate_content(   # <- note ".models"
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=GEN_CONFIG
+            # stream=False # Default is False, not needed explicitly
+        )
+
+
+        # Check for response text and parse JSON
+        if not resp.text:
+            # Handle cases where the model might fail schema validation or return unexpected structure
+            finish_reason = getattr(resp.candidates[0].finish_reason, 'name', 'UNKNOWN') if resp.candidates else 'NO_CANDIDATES'
+            safety_ratings = getattr(resp.candidates[0], 'safety_ratings', []) if resp.candidates else []
+            prompt_feedback = getattr(resp, 'prompt_feedback', None)
+            logger.error(f"Gemini response was empty. Finish Reason: {finish_reason}, Safety Ratings: {safety_ratings}, Prompt Feedback: {prompt_feedback}")
+            logger.debug("Gemini raw response: %s", resp)
+            # Consider checking safety ratings and finish reason more closely
+            if finish_reason not in ('STOP', 'MAX_TOKENS'): # Check if finish reason indicates an issue
+                 raise RuntimeError(f"Gemini returned an empty response with finish reason: {finish_reason}")
+            elif not resp.candidates or not resp.candidates[0].content.parts: # Check if content is actually missing
+                 raise RuntimeError(f"Gemini returned an empty response. Finish Reason: {finish_reason}")
+            # If finish reason is STOP/MAX_TOKENS but text is empty, it might be a schema validation failure on the model side
+            # or an issue with the response structure not matching expectations.
+            # Adding more detailed logging here can help.
+            logger.warning(f"Gemini response text is empty despite finish reason {finish_reason}. Raw response: {resp}")
+            # Depending on requirements, you might return an empty list or raise an error. Raising for now.
+            raise RuntimeError(f"Gemini returned empty text despite finish reason {finish_reason}. Check schema or model behavior.")
+
+
+        try:
+            # Parse the JSON string from the response text
+            cleaned = resp.text.strip().removeprefix("```json").removesuffix("```")
+            output_data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.error("Failed to decode JSON response from Gemini: %s", e)
+            logger.debug("Gemini raw text response: %s", resp.text)
+            # Log finish reason etc. again for context
+            finish_reason = getattr(resp.candidates[0].finish_reason, 'name', 'UNKNOWN') if resp.candidates else 'NO_CANDIDATES'
+            safety_ratings = getattr(resp.candidates[0], 'safety_ratings', []) if resp.candidates else []
+            prompt_feedback = getattr(resp, 'prompt_feedback', None)
+            logger.error(f"JSON Decode Error Context - Finish Reason: {finish_reason}, Safety Ratings: {safety_ratings}, Prompt Feedback: {prompt_feedback}")
+            raise RuntimeError("Gemini failed to produce valid JSON output.") from e
+
+        # Basic validation (ensure it's a list as expected by the schema)
+        if not isinstance(output_data, list):
+            logger.error(f"Expected list from Gemini JSON, got {type(output_data)}")
+            logger.debug("Parsed JSON data: %s", output_data)
+            raise TypeError(f"Gemini output did not match expected schema type (list), got {type(output_data)}")
+
+        # Optional: Add more validation here if needed (e.g., check dict keys)
+
+        return output_data
+
+    except Exception as e:
+        # Catch specific Google API errors if possible for better logging
+        # Example: from google.api_core import exceptions as google_exceptions
+        # except google_exceptions.GoogleAPIError as api_error: ...
+        logger.error("Error during Gemini extraction: %s", e)
+        logger.debug(traceback.format_exc())
+        # Include raw response in debug logs if available and not already logged
+        if 'resp' in locals():
+             logger.debug("Gemini raw response during exception: %s", resp)
+        raise # Re-raise the exception
+
+
+def _extract_paginated(pdf_path: Path, batch_size: int = 10) -> list[dict]:
+    """Opens a PDF, extracts content in batches using Gemini, and returns combined JSON."""
+    logger.info(f"Starting paginated extraction for {pdf_path} with batch size {batch_size}")
+    all_pages_json = []
+    doc = None # Initialize doc to None
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages = doc.page_count
+        logger.info(f"PDF has {total_pages} pages.")
+
+        for start_page in range(0, total_pages, batch_size):
+            end_page = min(start_page + batch_size, total_pages)
+            logger.info(f"Processing pages {start_page + 1} to {end_page}...")
+
+            # Create a new PDF fragment in memory containing only the pages for this batch
+            batch_doc = fitz.open() # Create empty doc
+            batch_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
+            pdf_fragment_bytes = batch_doc.tobytes()
+            batch_doc.close()
+
+            if not pdf_fragment_bytes:
+                 logger.warning(f"Generated empty PDF fragment for pages {start_page+1}-{end_page}. Skipping batch.")
+                 continue
+
+            pdf_part = _make_part(pdf_fragment_bytes, mime_type="application/pdf")
+
+            try:
+                # Call the updated _gemini_extract for the batch
+                batch_json = _gemini_extract(pdf_part)
+                for page_data in batch_json:
+                    if isinstance(page_data, dict) and 'page' in page_data:
+                         page_data['page'] = page_data['page'] + start_page # Adjust page number
+                    else:
+                         logger.warning(f"Unexpected item format in batch JSON: {page_data}")
+
+                all_pages_json.extend(batch_json)
+                logger.info(f"Successfully processed batch {start_page+1}-{end_page}, got {len(batch_json)} pages.")
+            except Exception as batch_exc:
+                logger.error(f"Failed to process batch {start_page+1}-{end_page}: {batch_exc}")
+                # Decide on error handling: continue, retry, or fail fast?
+                # For now, let's fail fast if a batch fails.
+                raise RuntimeError(f"Extraction failed on batch {start_page+1}-{end_page}") from batch_exc
+
+        logger.info(f"Finished paginated extraction. Total pages extracted: {len(all_pages_json)}")
+        return all_pages_json
+
+    except fitz.FileNotFoundError:
+        logger.error(f"PyMuPDF could not find or open file: {pdf_path}")
         raise
-    return data
+    except Exception as e:
+        logger.error(f"Error during paginated extraction setup or loop for {pdf_path}: {e}")
+        logger.debug(traceback.format_exc())
+        raise # Re-raise other exceptions
+    finally:
+        if doc:
+            doc.close() # Ensure the main document is closed
+
+
+_EMBED_TOKEN_LIMIT = 20_000
+_SAFETY_MARGIN     = 3_000
+_EFFECTIVE_LIMIT   = _EMBED_TOKEN_LIMIT - _SAFETY_MARGIN
+
+def _yield_token_batched(texts: list[str], limit: int = _EFFECTIVE_LIMIT):
+    """Yield sub-lists whose total token count ≤ limit."""
+    batch, running = [], 0
+    for t in texts:
+        tok = len(tokenizer.encode(t))
+        # split pathological long chunk on the fly
+        if tok > limit:
+            sub = _chunk_text(t, max_tokens=limit - 1, overlap=0)
+            for s in sub:
+                yield [s]                     # each sub-chunk alone
+            continue
+        if running + tok > limit and batch:
+            yield batch
+            batch, running = [], 0
+        batch.append(t)
+        running += tok
+    if batch:
+        yield batch
 
 
 def _embed_chunks(chunks: List[str]) -> List[List[float]]:
-    embeddings = embedding_model.get_embeddings(chunks)
-    return [e.values for e in embeddings]
+    all_vectors: List[List[float]] = []
+    for sublist in _yield_token_batched(chunks):
+        embs = embedding_model.get_embeddings(sublist)
+        all_vectors.extend(e.values for e in embs)
+    return all_vectors
 
 ###############################################################################
 # Database helpers
@@ -327,6 +522,7 @@ def _process_blob(
         logger.info(f"Download complete.")
 
         full_text = ""
+        extracted_pages_json: Optional[List[dict]] = None # Store extracted JSON data
         # processed_gcs_path remains None unless explicitly set below
 
         # Use object_suffix for routing
@@ -346,6 +542,7 @@ def _process_blob(
                  raise # Re-raise read errors
             # No PDF conversion or Gemini extraction needed for TXT
             # processed_gcs_path remains None
+            # extracted_pages_json remains None
 
         elif object_suffix in {".pdf", ".doc", ".docx"}:
             logger.info(f"Processing as document (needs PDF): {local_download_path}")
@@ -355,21 +552,37 @@ def _process_blob(
             if not pdf_path.exists():
                  raise FileNotFoundError(f"PDF file not found or created at {pdf_path} from {local_download_path}")
 
-            logger.info(f"Extracting content from PDF: {pdf_path} using Gemini...")
-            pages = _gemini_extract(pdf_path) # Extract content using Gemini
-            logger.info(f"Extracted {len(pages)} page structures from {pdf_path}.")
+            # Use the new paginated extraction function
+            logger.info(f"Extracting content from PDF: {pdf_path} using paginated Gemini...")
+            extracted_pages_json = _extract_paginated(pdf_path) # Returns list[dict]
+            logger.info(f"Extracted {len(extracted_pages_json)} page structures from {pdf_path}.")
 
-            # Upload extracted JSON to processed bucket
-            processed_name = f"{doc_id}.json"
-            processed_blob = storage_client.bucket(PROCESSED_BUCKET).blob(processed_name)
-            logger.info(f"Uploading extracted JSON to gs://{PROCESSED_BUCKET}/{processed_name}")
-            processed_blob.upload_from_string(json.dumps(pages), content_type="application/json")
-            processed_gcs_path = f"gs://{PROCESSED_BUCKET}/{processed_name}" # Set processed path
-            logger.info(f"Upload complete: {processed_gcs_path}")
+            # Upload extracted JSON to processed bucket if extraction was successful
+            if extracted_pages_json is not None: # Check if list is not None (could be empty list)
+                processed_name = f"{doc_id}.json"
+                processed_blob = storage_client.bucket(PROCESSED_BUCKET).blob(processed_name)
+                logger.info(f"Uploading extracted JSON ({len(extracted_pages_json)} pages) to gs://{PROCESSED_BUCKET}/{processed_name}")
+                # Ensure proper JSON serialization
+                try:
+                    json_string = json.dumps(extracted_pages_json, ensure_ascii=False, indent=2) # Use indent for readability
+                except TypeError as json_err:
+                    logger.error(f"Failed to serialize extracted data to JSON: {json_err}")
+                    raise RuntimeError("Failed to serialize extracted page data") from json_err
 
-            # Combine text from extracted pages
-            full_text = " ".join(p.get("body", "") for p in pages if p.get("body"))
-            logger.info(f"Combined text has {len(full_text)} characters.")
+                processed_blob.upload_from_string(json_string, content_type="application/json; charset=utf-8") # Specify charset
+                processed_gcs_path = f"gs://{PROCESSED_BUCKET}/{processed_name}" # Set processed path
+                logger.info(f"Upload complete: {processed_gcs_path}")
+
+                # Combine text from extracted pages for chunking
+                full_text = " ".join(
+                    p.get("body", "") for p in extracted_pages_json if isinstance(p, dict) and p.get("body")
+                )
+                logger.info(f"Combined text from JSON has {len(full_text)} characters.")
+            else:
+                 # This case should ideally not happen if _extract_paginated raises errors,
+                 # but handle defensively.
+                 logger.warning(f"Extraction resulted in None for {pdf_path}. No JSON uploaded, no text combined.")
+                 full_text = "" # Ensure full_text is empty
 
         else:
             # If file type is unsupported based on GCS object suffix
@@ -470,4 +683,13 @@ async def ingest(request: Request):
 
 
 if __name__ == "__main__":
+    # Add PyMuPDF license check/acknowledgement if required by your usage context
+    try:
+        fitz.TOOLS.mupdf_display_errors(False) # Optionally suppress MuPDF errors/warnings to stdout
+        # You might need to agree to AGPL or obtain a commercial license depending on use case.
+        # fitz.TOOLS.set_small_glyph_heights(True) # Example configuration
+        logger.info(f"PyMuPDF library version {fitz.__doc__}")
+    except Exception as fitz_init_err:
+        logger.warning(f"Could not configure PyMuPDF: {fitz_init_err}")
+
     uvicorn.run(app, host="0.0.0.0", port=8080)

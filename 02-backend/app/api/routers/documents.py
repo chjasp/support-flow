@@ -1,33 +1,52 @@
 import os, uuid, logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Path
+from typing import List
 
 from app.api.deps import get_cloudsql_repo
 from app.services.cloudsql import CloudSqlRepository
 from app.models.domain import DocumentItem
+from app.api.auth import verify_token
 
-router = APIRouter(prefix="", tags=["documents"])
+router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(verify_token)]
+)
 
-@router.get("/documents", response_model=list[DocumentItem])
-async def list_documents(repo: CloudSqlRepository = Depends(get_cloudsql_repo)):
-    """Lists documents and their status from Cloud SQL."""
+@router.get("/", response_model=List[DocumentItem])
+async def list_all_documents(
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+):
+    """Lists all documents in the knowledge base."""
     try:
-        return repo.list_documents()
+        return sql_repo.list_documents()
     except Exception as e:
-        logging.error(f"Failed to list documents from Cloud SQL: {e}", exc_info=True)
-        # Consider more specific error handling based on repo exceptions
-        raise HTTPException(status_code=500, detail="Failed to retrieve document list.")
+        logging.error(f"Error listing documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve documents")
 
-@router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(doc_id: str,
-                          repo: CloudSqlRepository = Depends(get_cloudsql_repo)):
-    """Deletes a document record from Cloud SQL."""
+@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_single_document(
+    doc_id: str = Path(..., description="The UUID of the document to delete"),
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+):
+    """Deletes a specific document by its ID."""
     try:
-        repo.delete_document(doc_id)
-    except KeyError: # Raised by repo if not found
-        raise HTTPException(status_code=404, detail="Document not found")
-    except ValueError: # Raised by repo if UUID format is invalid
-        raise HTTPException(status_code=400, detail="Invalid document ID format.")
+        # Call the delete method. It will raise KeyError if not found.
+        sql_repo.delete_document(doc_id)
+        # If no exception was raised, the deletion was successful.
+        # The status_code=204 handles the success response automatically.
+        return # Implicitly returns No Content
+
+    except KeyError: # Catch the specific error for "not found"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    except ValueError: # Catch invalid UUID format from the repo
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document ID format")
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise other specific HTTP exceptions if needed
     except Exception as e:
-        logging.error(f"Failed to delete document {doc_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete document.")
-    # No return needed on 204
+        logging.error(f"Error deleting document {doc_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete document")
+
+# Note: The GCS event-triggered processing endpoint might NOT need this auth
+# if it's triggered internally. However, if you add manual trigger endpoints,
+# they would need protection.

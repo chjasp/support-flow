@@ -1,5 +1,6 @@
 "use client"; // Add this directive at the top
 
+import { useSession, signIn } from "next-auth/react"; // Import useSession and signIn
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -9,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ArrowRight, Bot, FileUp, MailWarning } from "lucide-react"; // Example icons
+import { ArrowRight, Bot, FileUp, MailWarning, Loader2 } from "lucide-react"; // Example icons
 import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from "recharts" // Import recharts components
 import {
@@ -18,8 +19,22 @@ import {
   ChartTooltipContent,
   type ChartConfig // Import ChartConfig type
 } from "@/components/ui/chart" // Import shadcn chart components
+import { useEffect } from "react"; // Import useEffect for redirect
+import { useRouter } from "next/navigation"; // Import useRouter for redirect
 
 export default function DashboardPage() {
+  const { data: session, status } = useSession(); // Get session status
+  const router = useRouter();
+
+  // Redirect if not authenticated
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      // Optionally redirect to a specific sign-in page or show a message
+      // For simplicity, we'll just prevent rendering sensitive content below
+      // Or redirect: router.push('/api/auth/signin'); // Or a custom signin page
+    }
+  }, [status, router]);
+
   // Placeholder data - replace with actual data fetching later
   const emailsToReviewCount = 5;
   const kbDocumentCount = 152;
@@ -54,6 +69,26 @@ export default function DashboardPage() {
     },
   } satisfies ChartConfig // Add ChartConfig type after satisfies
 
+  // Show loading state
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Show login prompt or restrict content if unauthenticated
+  if (status === "unauthenticated") {
+    return (
+      <div className="flex flex-col items-center justify-center h-full">
+        <p className="text-lg mb-4">Please sign in to view the dashboard.</p>
+        <Button onClick={() => signIn("google")}>Sign In with Google</Button>
+      </div>
+    );
+  }
+
+  // Render dashboard content only if authenticated
   return (
     <div className="px-6">
       <h1 className="text-3xl font-bold tracking-tight mb-6">Dashboard</h1>

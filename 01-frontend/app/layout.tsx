@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "@/app/globals.css";
 import { MainNav } from "@/components/main-nav";
 import { cn } from "@/lib/utils";
+import { NextAuthProvider } from "@/components/session-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,16 +34,18 @@ export default function RootLayout({
           geistMono.variable
         )}
       >
-        <div className="flex min-h-screen flex-col">
-          <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-            <div className="container flex h-14 max-w-screen-2xl items-center">
-              <MainNav />
-            </div>
-          </header>
-          <main className="flex flex-1 container max-w-screen-2xl pt-6">
-            {children}
-          </main>
-        </div>
+        <NextAuthProvider>
+          <div className="flex min-h-screen flex-col">
+            <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+              <div className="container flex h-14 max-w-screen-2xl items-center">
+                <MainNav />
+              </div>
+            </header>
+            <main className="flex flex-1 container max-w-screen-2xl pt-6">
+              {children}
+            </main>
+          </div>
+        </NextAuthProvider>
       </body>
     </html>
   );

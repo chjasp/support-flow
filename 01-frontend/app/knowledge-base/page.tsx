@@ -25,7 +25,9 @@ import {
   FileUp,
   ClipboardPaste,
   Loader2,
+  RefreshCw,
 } from "lucide-react"; // Example icons
+import { useSession } from "next-auth/react"; // Import useSession
 
 // Define a type for knowledge items (replace with your actual data structure)
 type KnowledgeItem = {
@@ -49,6 +51,7 @@ const GET_ITEMS_ENDPOINT = `${API_BASE_URL}/documents`; // Add the new endpoint 
 const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Define the base URL for delete
 
 export default function KnowledgeBasePage() {
+  const { data: session, status } = useSession(); // Get session
   const [activeView, setActiveView] = useState<"overview" | "upload">(
     "overview"
   );
@@ -60,48 +63,92 @@ export default function KnowledgeBasePage() {
   const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep initial loading state
 
   // --- Fetch Data Logic (extracted) ---
-  const fetchItems = useCallback(async (isInitialLoad = false) => {
-    // Only set global fetching state on initial load
-    if (isInitialLoad) {
-      setIsFetchingItems(true);
-      setKnowledgeItems([]); // Clear on initial load
+  const fetchKnowledgeItems = useCallback(async () => {
+    // Only fetch if authenticated and session has idToken
+    if (status !== "authenticated" || !session?.idToken) {
+      console.log("Not authenticated or missing token, skipping fetch.");
+      setIsFetchingItems(false); // Stop loading indicator
+      setKnowledgeItems([]); // Clear items if not logged in
+      return;
     }
-    console.log(`Fetching knowledge items from: ${GET_ITEMS_ENDPOINT}`);
+
+    // Don't set isFetchingItems to true if only polling in the background,
+    // unless it's the very first load. Let the Refresh button handle explicit loading state.
+    // We can check if knowledgeItems is empty for the initial load.
+    const isInitialLoad = knowledgeItems.length === 0;
+    if (isInitialLoad) {
+        setIsFetchingItems(true);
+    }
+
     try {
-      const response = await fetch(GET_ITEMS_ENDPOINT);
+      const response = await fetch(GET_ITEMS_ENDPOINT, {
+        headers: {
+          Authorization: `Bearer ${session.idToken}`,
+        },
+      });
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          `Failed to fetch items: ${response.status} ${response.statusText} - ${errorText}`
-        );
+         if (response.status === 401 || response.status === 403) {
+            console.error("Unauthorized. Token might be invalid or expired.");
+            // Optionally trigger sign out or refresh
+            // signOut();
+         } else {
+            throw new Error(`Failed to fetch items: ${response.statusText}`);
+         }
+         // If unauthorized, clear items and stop
+         setKnowledgeItems([]);
+         return; // Stop execution here for auth errors
       }
-      const data: any[] = await response.json(); // Use any[] temporarily for flexibility
 
-      const processedData = data.map(item => ({
-        ...item,
-        id: String(item.id), // Ensure ID is string
-        uploadError: item.errorMessage || undefined // Map backend 'errorMessage' to frontend 'uploadError'
-      }));
+      const backendData: KnowledgeItem[] = await response.json();
 
-      setKnowledgeItems(processedData as KnowledgeItem[]); // Cast back to KnowledgeItem[]
+      // --- Merging Logic ---
+      setKnowledgeItems((prevItems) => {
+        // 1. Identify temporary items still marked as "Uploading" in the previous state
+        //    These items have a gcsUri because the upload attempt was made.
+        const uploadingItems = prevItems.filter(
+          (item) => item.status === "Uploading" && item.gcsUri
+        );
+
+        // 2. Create a map of backend items by gcsUri for efficient lookup.
+        //    The backend needs to return gcsUri (original_gcs) for this to work.
+        const backendDataMap = new Map(
+          backendData
+            .filter(item => item.gcsUri) // Only map items that have a gcsUri from backend
+            .map((item) => [item.gcsUri, item])
+        );
+
+        // 3. Filter uploading items: keep only those whose gcsUri is NOT yet present in the backend response
+        const pendingUploadItems = uploadingItems.filter(
+          (item) => !backendDataMap.has(item.gcsUri)
+        );
+
+        // 4. Combine the fresh backend data with the pending temporary items
+        const combinedItems = [...backendData, ...pendingUploadItems];
+
+        // 5. Sort the combined list by dateAdded descending
+        //    Ensure dateAdded is comparable (using full ISO string is better)
+        combinedItems.sort((a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime());
+
+        // console.log(`Merged items: ${backendData.length} from backend, ${pendingUploadItems.length} pending uploads kept.`);
+        return combinedItems;
+      });
+      // --- End Merging Logic ---
 
     } catch (error) {
       console.error("Error fetching knowledge items:", error);
-      // TODO: Show error to user (e.g., using a toast notification)
-      if (isInitialLoad) {
-        setKnowledgeItems([]); // Set to empty on initial load error
-      } // Don't clear items if a poll fails, keep the last known state
+      // Keep existing items on fetch error? Or clear them? Decide based on desired UX.
+      // For now, we keep them, but stop the loading indicator.
+      // setKnowledgeItems([]); // Optionally clear items on error
     } finally {
-      if (isInitialLoad) {
-        setIsFetchingItems(false);
-      }
+      // Always set fetching to false after attempt, even if only polling
+      setIsFetchingItems(false);
     }
-  }, []); // Empty dependency array as it doesn't depend on component state/props directly
+  }, [status, session, knowledgeItems.length]); // Add knowledgeItems.length to detect initial load state change
 
   // --- Initial Data Fetch ---
   useEffect(() => {
-    fetchItems(true); // Pass true for initial load
-  }, [fetchItems]); // Depend on the memoized fetchItems function
+    fetchKnowledgeItems();
+  }, [fetchKnowledgeItems]); // fetchKnowledgeItems includes status/session dependency
 
   // --- Polling Logic ---
   useEffect(() => {
@@ -116,7 +163,7 @@ export default function KnowledgeBasePage() {
       console.log(`Polling status for ${itemsToPoll.length} item(s)...`);
       intervalId = setInterval(() => {
         console.log("Polling interval triggered...");
-        fetchItems(false); // Fetch updates, not initial load
+        fetchKnowledgeItems(); // Fetch updates, not initial load
       }, 10000); // Poll every 10 seconds
     } else {
       console.log("No items in Processing/Uploading state. Stopping polling.");
@@ -129,7 +176,7 @@ export default function KnowledgeBasePage() {
         clearInterval(intervalId);
       }
     };
-  }, [knowledgeItems, fetchItems]); // Re-run effect if items or fetchItems change
+  }, [knowledgeItems, fetchKnowledgeItems]); // Re-run effect if items or fetchItems change
 
   // --- Event Handlers ---
 
@@ -212,16 +259,6 @@ export default function KnowledgeBasePage() {
         }
         console.log(`Successfully uploaded ${file.name} to ${gcsUri}`);
 
-        // Update item status to 'Processing' - indicating the upload is done and backend processing *should* start soon.
-        // The final 'Ready' or 'Error' status needs to be updated via another mechanism (polling, websocket, etc.)
-        setKnowledgeItems((prev) =>
-          prev.map((item) =>
-            item.id === tempId
-              ? { ...item, status: "Processing", gcsUri: gcsUri }
-              : item
-          )
-        );
-
         // We don't get the doc_id back immediately anymore.
         // The tempId will remain until the list is refreshed or updated via polling/websockets.
 
@@ -259,7 +296,7 @@ export default function KnowledgeBasePage() {
     setIsLoading(false);
 
     // Optional: Trigger a re-fetch of the list after uploads finish to get updated statuses sooner
-    // await fetchItems(); // You might need to extract fetchItems to be callable here
+    // await fetchKnowledgeItems(); // You might need to extract fetchKnowledgeItems to be callable here
   };
 
   const handleSavePastedText = async () => {
@@ -366,15 +403,6 @@ export default function KnowledgeBasePage() {
       }
       console.log(`Successfully uploaded text content as ${filename} to ${gcsUri}`);
 
-      // Update item status to 'Processing' - backend will take over via GCS trigger
-      setKnowledgeItems((prev) =>
-        prev.map((item) =>
-          item.id === tempId
-            ? { ...item, status: "Processing" } // GCS URI already stored
-            : item
-        )
-      );
-
       // Optional: Show success notification
       alert(`"${originalTitle}" uploaded successfully. Processing will start automatically. Status will update later.`);
 
@@ -404,71 +432,86 @@ export default function KnowledgeBasePage() {
   };
 
   const handleDeleteItem = async (id: string, name: string) => {
-    // 1. Confirmation Dialog
-    if (!window.confirm(`Are you sure you want to delete "${name}"? This action cannot be undone.`)) {
-      return; // Stop if user cancels
-    }
-
-    console.log("Attempting to delete item:", id);
-    // Store the item to potentially restore on error (optional but good practice)
+    // 1. Find the item in the current state
     const itemToDelete = knowledgeItems.find(item => item.id === id);
     if (!itemToDelete) {
         console.warn("Item to delete not found in current state:", id);
         return; // Should not happen if button is clicked on an existing item
     }
 
-    // 2. Optimistic UI update: Remove the item immediately
+    // 2. Check if it's a purely client-side error state (failed before backend processing)
+    // We can infer this if the status is 'Error' and there's an 'uploadError' message,
+    // indicating the failure likely happened during the frontend upload steps.
+    // Alternatively, check if gcsUri is missing, as it's usually set after successful upload.
+    const isClientSideFailure = itemToDelete.status === 'Error' && !!itemToDelete.uploadError;
+    // const isClientSideFailure = itemToDelete.status === 'Error' && !itemToDelete.gcsUri; // Alternative check
+
+    // 3. Confirmation Dialog (Keep this)
+    if (!window.confirm(`Are you sure you want to delete "${name}"? This action cannot be undone.`)) {
+      return; // Stop if user cancels
+    }
+
+    console.log(`Attempting to delete item: ${id}. Client-side failure: ${isClientSideFailure}`);
+
+    // 4. Optimistic UI update: Remove the item immediately (applies to both cases)
     setKnowledgeItems((prev) => prev.filter((item) => item.id !== id));
 
-    try {
-      // 3. Call the Backend API
-      const response = await fetch(`${DELETE_ITEM_ENDPOINT}/${id}`, { // Append ID to URL
-        method: "DELETE",
-        headers: {
-            // Add any necessary headers like Authorization if needed in the future
-            // 'Authorization': `Bearer ${your_token}`
+    // 5. If it wasn't a client-side failure, proceed with backend deletion
+    if (!isClientSideFailure) {
+      try {
+        // Ensure session and idToken are available before making the call
+        if (!session?.idToken) {
+          console.error("No session token found. Cannot delete item.");
+          alert("Authentication error. Please try logging in again.");
+          // Rollback optimistic UI update
+          setKnowledgeItems((prev) => [itemToDelete, ...prev].sort((a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime()));
+          return;
         }
-      });
 
-      // 4. Handle Response
-      if (!response.ok) {
-        // If the response status code is not 2xx (e.g., 404, 500)
-        let errorDetails = `Status: ${response.status} ${response.statusText}`;
-        try {
-            // Try to parse potential JSON error from backend
-            const errorData = await response.json();
-            errorDetails += ` - ${errorData.detail || JSON.stringify(errorData)}`;
-        } catch (parseError) {
-            // If response is not JSON, try to read as text
-            try {
-                const errorText = await response.text();
-                errorDetails += ` - ${errorText || 'No further details'}`;
-            } catch (textError) {
-                 // Ignore if text cannot be read
-            }
+        const response = await fetch(`${DELETE_ITEM_ENDPOINT}/${id}`, { // Append ID to URL
+          method: "DELETE",
+          headers: {
+              'Authorization': `Bearer ${session.idToken}`,
+          }
+        });
+
+        // Handle Backend Response
+        if (!response.ok) {
+          // If the response status code is not 2xx (e.g., 404, 500)
+          let errorDetails = `Status: ${response.status} ${response.statusText}`;
+          try {
+              const errorData = await response.json();
+              errorDetails += ` - ${errorData.detail || JSON.stringify(errorData)}`;
+          } catch (parseError) {
+              try {
+                  const errorText = await response.text();
+                  errorDetails += ` - ${errorText || 'No further details'}`;
+              } catch (textError) { /* Ignore */ }
+          }
+          throw new Error(`Failed to delete item from backend: ${errorDetails}`);
         }
-        throw new Error(`Failed to delete item: ${errorDetails}`);
+
+        // Success!
+        console.log(`Successfully deleted item ID: ${id} from backend.`);
+        // Optional: Show success notification
+
+      } catch (error) {
+        console.error("Error deleting item from backend:", error);
+
+        // Rollback UI update on backend error
+        setKnowledgeItems((prev) => [itemToDelete, ...prev].sort((a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime()));
+
+        // Show error message to user
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        alert(`Failed to delete "${name}" from backend.\nError: ${errorMessage}`);
       }
-
-      // Success! (Status code 204 No Content doesn't have a body)
-      console.log(`Successfully deleted item ID: ${id} from backend.`);
-      // Optional: Show success notification (e.g., using a toast library)
-      // showToast(`"${name}" deleted successfully.`);
-
-    } catch (error) {
-      console.error("Error deleting item:", error);
-
-      // 5. Rollback UI update on error
-      // Add the item back to the list. This simple version adds it back to the start.
-      // A more robust solution might try to re-insert at the original position or sort again.
-      setKnowledgeItems((prev) => [itemToDelete, ...prev].sort((a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime())); // Example sort
-
-      // Show error message to user
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      alert(`Failed to delete "${name}".\nError: ${errorMessage}`);
-      // TODO: Replace alert with a better notification system (e.g., toast)
+    } else {
+        // If it *was* a client-side failure, we already removed it from the UI.
+        // No backend call needed. Log success for local removal.
+        console.log(`Successfully removed client-side item ID: ${id} (upload failed previously).`);
+        // Optional: Show success notification for local removal
     }
-    // Optional: Add a finally block if you need to reset a specific 'deleting' state
+    // Optional: Add a finally block if needed
   };
 
   return (
@@ -480,14 +523,14 @@ export default function KnowledgeBasePage() {
         <h2 className="text-xl font-semibold mb-4">Knowledge Base</h2>
         <Button
           variant={activeView === "overview" ? "secondary" : "ghost"}
-          className="justify-start"
+          className="justify-start cursor-pointer"
           onClick={() => setActiveView("overview")}
         >
           <FileText className="mr-2 h-4 w-4" /> Overview
         </Button>
         <Button
           variant={activeView === "upload" ? "secondary" : "ghost"}
-          className="justify-start"
+          className="justify-start cursor-pointer"
           onClick={() => setActiveView("upload")}
         >
           <FileUp className="mr-2 h-4 w-4" /> Upload
@@ -505,9 +548,25 @@ export default function KnowledgeBasePage() {
       <main className="flex-1 p-6 overflow-auto">
         {activeView === "overview" && (
           <div>
-            <h1 className="text-3xl font-bold tracking-tight mb-2">
-              Knowledge Base Overview
-            </h1>
+            <div className="flex justify-between items-center mb-2"> {/* Flex container for title and button */}
+              <h1 className="text-3xl font-bold tracking-tight">
+                Knowledge Base Overview
+              </h1>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchKnowledgeItems} // Call fetch function on click
+                disabled={isFetchingItems} // Disable button while fetching
+                className="cursor-pointer"
+              >
+                {isFetchingItems ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" /> // Add refresh icon
+                )}
+                Refresh
+              </Button>
+            </div>
             <p className="text-muted-foreground mb-6">
               View and manage your knowledge base articles and documents.
             </p>
