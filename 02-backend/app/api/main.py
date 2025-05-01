@@ -18,10 +18,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=settings.cors_origins, # Origins from your settings
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allow all standard methods
+    allow_headers=["*", "Authorization"], # IMPORTANT: Allow all headers OR explicitly add "Authorization"
 )
 
 app.include_router(documents.router)

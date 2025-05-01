@@ -11,6 +11,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
-# Best practice: Use the PORT environment variable provided by Cloud Run
-# Use shell form of CMD to allow ${PORT} substitution
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
