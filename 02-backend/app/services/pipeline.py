@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
-from .vertex import VertexClient
+from .llm_service import LLMService
 from .firestore import FirestoreRepository
 from .cloudsql import CloudSqlRepository
 from app.config import get_settings, Settings
@@ -17,11 +17,11 @@ class DocumentPipeline:
     def __init__(self,
                  settings: Settings,
                  repo: FirestoreRepository,
-                 vertex: VertexClient,
+                 llm_service: LLMService,
                  sql_repo: CloudSqlRepository) -> None:
         self.settings = settings
         self.repo = repo
-        self.vertex = vertex
+        self.llm_service = llm_service
         self.sql_repo = sql_repo
 
     # ------------------------------------------------------------------ #
@@ -35,7 +35,7 @@ class DocumentPipeline:
         logging.info(f"Performing vector search for query: '{query[:50]}...'")
         try:
             # 1. Get query embedding
-            query_embedding = await self.vertex.get_embedding(query)
+            query_embedding = await self.llm_service.get_embedding(query)
             if not query_embedding:
                 logging.error("Failed to get query embedding.")
                 return [] # Return empty if embedding fails
@@ -60,7 +60,7 @@ class DocumentPipeline:
             logging.warning("No context chunks provided for RAG. Falling back to general knowledge.")
             prompt = f"Answer the question using general knowledge.\n\nQuestion: {query}\n\nAnswer (Markdown):"
             # Use await for the async call
-            return await self.vertex.generate_answer(prompt)
+            return await self.llm_service.generate_answer(prompt)
 
         # Extract text, ensuring 'chunk_text' key exists and value is not None
         ctx_texts = [c.get("chunk_text", "") for c in context_chunks if c and c.get("chunk_text")]
@@ -70,7 +70,7 @@ class DocumentPipeline:
             logging.warning("Received context chunks but couldn't extract valid text. Falling back to general knowledge.")
             prompt = f"Answer the question using general knowledge.\n\nQuestion: {query}\n\nAnswer (Markdown):"
             # Use await for the async call
-            return await self.vertex.generate_answer(prompt)
+            return await self.llm_service.generate_answer(prompt)
 
         # Combine valid context texts
         ctx = "\n---\n".join(valid_ctx_texts)
@@ -84,4 +84,4 @@ class DocumentPipeline:
 
         logging.info(f"Generating RAG answer with {len(valid_ctx_texts)} context chunks.")
         # Use await for the async call
-        return await self.vertex.generate_answer(prompt)
+        return await self.llm_service.generate_answer(prompt)

@@ -11,6 +11,11 @@ class Chunk(BaseModel):
     chunk_order: int
     keyword_score: Optional[float] = None
 
+class DocumentSource(BaseModel):
+    id: str
+    name: str
+    uri: Optional[str] = None   # gcs uri, presigned url, etc.
+
 class DocumentItem(BaseModel):
     id: str
     name: str
@@ -48,9 +53,13 @@ class ChatMessage(BaseModel):
     text: str
     sender: Literal["user", "ai", "bot"]
     timestamp: Optional[datetime.datetime] = None
+    sources: Optional[List[DocumentSource]] = None
 
     class Config:
         arbitrary_types_allowed = True
+        json_encoders = {
+            datetime.datetime: lambda dt: dt.isoformat() if dt else None
+        }
 
 class ChatMetadata(BaseModel):
     id: str
@@ -60,6 +69,9 @@ class ChatMetadata(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+        json_encoders = {
+            datetime.datetime: lambda dt: dt.isoformat() if dt else None
+        }
 
 class NewChatResponse(BaseModel):
     id: str
@@ -127,3 +139,14 @@ class ProcessResponse(BaseModel):
     document_id: str
     message: str
     chunks_processed: int
+
+# --- NEW: Response model for posting a message ---
+class PostMessageResponse(BaseModel):
+    user_message: ChatMessage
+    bot_message: ChatMessage
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime.datetime: lambda dt: dt.isoformat() if dt else None
+        }

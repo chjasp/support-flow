@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Body, Path, status
 from typing import List, Optional
 import datetime as _dt
 
-from app.api.deps import get_vertex, get_repo, get_gmail_service
-from app.services.vertex import VertexClient
+from app.api.deps import get_llm_service, get_repo, get_gmail_service
+from app.services.llm_service import LLMService
 from app.services.firestore import FirestoreRepository
 from app.services.gmail import GmailService
 from app.models.domain import (
@@ -36,7 +36,7 @@ class UpdateDraftRequest(BaseModel):
 @router.post("/generate-reply", response_model=GenerateReplyResponse)
 async def generate_email_reply(
     body: GenerateReplyRequest,
-    vertex: VertexClient = Depends(get_vertex) # Inject VertexClient
+    llm_service: LLMService = Depends(get_llm_service) # Inject LLMService
 ):
     """
     Receives email content and generates a suggested reply using an LLM.
@@ -57,7 +57,7 @@ async def generate_email_reply(
         """
 
         # --- Generate Reply using Vertex AI ---
-        generated_reply = await vertex.generate_answer(prompt) # Use the existing generate_answer method
+        generated_reply = await llm_service.generate_answer(prompt) # Use the new service
 
         logging.info(f"Generated reply: '{generated_reply[:100]}...'")
 
@@ -73,7 +73,7 @@ async def generate_email_reply(
 @router.post("/refine-reply", response_model=RefineReplyResponse)
 async def refine_email_reply(
     body: RefineReplyRequest,
-    vertex: VertexClient = Depends(get_vertex)
+    llm_service: LLMService = Depends(get_llm_service) # Inject LLMService
 ):
     """
     Receives original email, current draft, and an instruction,
@@ -106,7 +106,7 @@ async def refine_email_reply(
         """
 
         # --- Generate Refined Reply using Vertex AI ---
-        refined_reply_text = await vertex.generate_answer(prompt)
+        refined_reply_text = await llm_service.generate_answer(prompt) # Use the new service
 
         logging.info(f"Refined reply: '{refined_reply_text[:100]}...'")
 

@@ -14,7 +14,7 @@ from google.cloud.sql.connector import Connector, IPTypes
 # from psycopg2.pool import SimpleConnectionPool # Remove this
 
 from app.config import get_settings, Settings
-from app.services.vertex import VertexClient
+from app.services.llm_service import LLMService
 from app.services.firestore import FirestoreRepository
 from app.services.pipeline import DocumentPipeline
 from app.services.cloudsql import CloudSqlRepository
@@ -28,13 +28,14 @@ settings = get_settings() # Get settings at module level
 def get_repo() -> FirestoreRepository:
     """Provides a FirestoreRepository instance (now primarily for chats)."""
     logging.info("Initializing FirestoreRepository...")
-    return FirestoreRepository()
+    project_id = settings.gcp_project  # Ensure this is correctly set in your config
+    return FirestoreRepository(project_id=project_id)
 
 @lru_cache()
-def get_vertex() -> VertexClient:
-    """Provides a VertexClient instance."""
-    logging.info("Initializing VertexClient...")
-    return VertexClient()
+def get_llm_service() -> LLMService:
+    """Provides an LLMService instance."""
+    logging.info("Initializing LLMService...")
+    return LLMService()
 
 # --- Cloud SQL Dependencies (Refactored) ---
 
@@ -58,12 +59,12 @@ def get_cloudsql_repo(connector: Connector = Depends(get_connector)) -> CloudSql
 
 def get_pipeline(
     repo: FirestoreRepository = Depends(get_repo),
-    vertex: VertexClient = Depends(get_vertex),
+    llm_service: LLMService = Depends(get_llm_service),
     sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo), # Inject CloudSqlRepository
 ) -> DocumentPipeline:
     """Provides a DocumentPipeline instance with necessary repositories."""
     # Pass all required dependencies to the constructor
-    return DocumentPipeline(settings=settings, repo=repo, vertex=vertex, sql_repo=sql_repo)
+    return DocumentPipeline(settings=settings, repo=repo, llm_service=llm_service, sql_repo=sql_repo)
 
 
 # --- Gmail Service Dependency (Updated) ---

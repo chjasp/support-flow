@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-google-cloud-aiplatform>=1.38.0
+google-genai>=0.4.0 # Or a more recent version
 google-cloud-firestore
 google-cloud-storage
 pydantic
