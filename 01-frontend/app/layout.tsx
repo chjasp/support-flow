@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Customer Coordination",
+  title: "bloomlake",
   description: "Coordinate customer interactions with AI",
 };
 

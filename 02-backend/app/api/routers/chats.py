@@ -138,7 +138,7 @@ async def post_message_to_chat(
             if doc_id and doc_id not in unique_docs:
                 unique_docs[doc_id] = DocumentSource(
                     id=str(doc_id),
-                    name=c.get("filename") or c.get("document_name") or "Document",
+                    name=c.get("doc_filename") or "Unknown Document",
                     uri=c.get("gcs_uri"),
                 )
         sources = list(unique_docs.values())
