@@ -1,17 +1,20 @@
 import uuid, logging, datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List
+from collections import OrderedDict
 
 from app.api.deps import get_repo, get_pipeline
 from app.services.firestore import FirestoreRepository, _DEFAULT_CHAT_TITLE, NotFound
 from app.services.pipeline import DocumentPipeline
 from app.models.domain import (
     QueryRequest,
-    QueryResponse,
-    Chunk,
+    # QueryResponse, # No longer used here
+    # Chunk, # No longer used here
     ChatMessage,
     ChatMetadata,
-    NewChatResponse
+    NewChatResponse,
+    PostMessageResponse,
+    DocumentSource
 )
 from app.config import get_settings
 
@@ -87,7 +90,7 @@ async def delete_chat_session(
 
 query_router = APIRouter(prefix="/chat", tags=["chat query"])
 
-@query_router.post("/{chat_id}", response_model=QueryResponse)
+@query_router.post("/{chat_id}", response_model=PostMessageResponse)
 async def post_message_to_chat(
     body: QueryRequest,
     chat_id: str = Path(..., title="The ID of the chat session"),
@@ -96,40 +99,64 @@ async def post_message_to_chat(
 ):
     """
     Sends a user message to a chat, generates a bot response using RAG,
-    saves both messages, and updates the chat metadata.
+    saves both messages, updates chat metadata, and returns both saved messages.
     """
     try:
-        # 1. Save User Message
-        user_message = ChatMessage(text=body.query, sender="user")
-        repo.add_message_to_chat(chat_id, user_message)
+        # 1. Save User Message (and get the saved object back)
+        user_message_to_save = ChatMessage(text=body.query, sender="user")
+        saved_user_message = repo.add_message_to_chat(chat_id, user_message_to_save)
 
         # 2. Check if Chat Title needs updating (first user message)
-        chat_metadata_list = repo.list_chats()
-        current_chat = next((c for c in chat_metadata_list if c.id == chat_id), None)
+        #    (Consider moving title update logic to repo.add_message_to_chat if preferred)
+        try:
+            chat_metadata_list = repo.list_chats() # Inefficient, ideally get single chat meta
+            current_chat = next((c for c in chat_metadata_list if c.id == chat_id), None)
 
-        if current_chat and current_chat.title == _DEFAULT_CHAT_TITLE:
-             # Generate title from first user message
-             max_len = 30
-             potential_new_title = body.query[:max_len] + ("..." if len(body.query) > max_len else "")
-             if potential_new_title:
-                 repo.update_chat_title(chat_id, potential_new_title)
+            if current_chat and current_chat.title == _DEFAULT_CHAT_TITLE:
+                 # Generate title from first user message
+                 max_len = settings.MAX_CHAT_TITLE_LENGTH # Use config setting
+                 potential_new_title = body.query[:max_len] + ("..." if len(body.query) > max_len else "")
+                 if potential_new_title:
+                     repo.update_chat_title(chat_id, potential_new_title)
+        except Exception as title_update_err:
+             # Log error but continue processing the message
+             logging.warning(f"Could not update title for chat {chat_id}: {title_update_err}")
+
 
         # 3. Perform RAG Pipeline
         logging.info(f"Performing RAG for chat {chat_id} with query: '{body.query[:50]}...'")
-        chunks_data = await pipeline.hybrid_search(body.query)
-        answer = await pipeline.answer(body.query, chunks_data)
+        # Assuming pipeline returns text answer and optionally chunk data
+        # If pipeline methods need adjustment, do it here.
+        context_chunks = await pipeline.hybrid_search(body.query)
+        answer = await pipeline.answer(body.query, context_chunks)
         logging.info(f"Generated answer for chat {chat_id}: '{answer[:50]}...'")
 
-        # 4. Save Bot Message
-        bot_message = ChatMessage(text=answer, sender="bot")
-        repo.add_message_to_chat(chat_id, bot_message)
+        # 4. Build the distinct document list
+        unique_docs = OrderedDict()
+        for c in context_chunks:
+            doc_id = c.get("doc_id") or c.get("document_id")
+            if doc_id and doc_id not in unique_docs:
+                unique_docs[doc_id] = DocumentSource(
+                    id=str(doc_id),
+                    name=c.get("doc_filename") or "Unknown Document",
+                    uri=c.get("gcs_uri"),
+                )
+        sources = list(unique_docs.values())
 
-        # 5. Prepare and Return Response
-        resp_chunks = [Chunk(**c) for c in chunks_data]
-        return QueryResponse(answer=answer, retrieved_chunks=resp_chunks)
+        # 5. Save Bot Message (and get the saved object back)
+        bot_message_to_save = ChatMessage(text=answer, sender="bot", sources=sources)
+        saved_bot_message = repo.add_message_to_chat(chat_id, bot_message_to_save)
 
-    except NotFound:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat {chat_id} not found during message processing.")
+        # 6. Prepare and Return the New Response Model
+        return PostMessageResponse(
+            user_message=saved_user_message,
+            bot_message=saved_bot_message
+        )
+
+    except NotFound as e:
+        # Catch specific NotFound from repo methods
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         logging.error(f"Error processing message for chat {chat_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to process message: {e}")
+        # Provide a more generic error detail to the client
+        raise HTTPException(status_code=500, detail="Failed to process message due to an internal error.")

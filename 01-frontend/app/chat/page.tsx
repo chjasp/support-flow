@@ -1,6 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  KeyboardEvent,
+} from "react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -9,126 +17,168 @@ import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
-// --- Define Types (Align with Backend) ---
+/* -------------------------------------------------------------------------- */
+/*                                   Types                                    */
+/* -------------------------------------------------------------------------- */
+
+type Sender = "user" | "bot";
+
+type DocSource = { id: string; name: string; uri?: string };
+
 type Message = {
-  id: string; // Firestore document ID
+  id: string;
   text: string;
-  sender: "user" | "bot";
-  timestamp: string; // Store as ISO string (Firestore returns Date, fetch converts)
+  sender: Sender;
+  timestamp: string;
+  sources?: DocSource[];
 };
 
-// Type for chat metadata list
 type ChatMetadata = {
   id: string;
   title: string;
-  // createdAt: string; // Optional: if needed for display
-  lastActivity: string; // ISO string
+  lastActivity: string;
 };
 
-// --- Constants ---
-const MAX_TITLE_LENGTH = 30; // Keep consistent with backend if used there
+/* -------------------------------------------------------------------------- */
+/*                                Const Values                                */
+/* -------------------------------------------------------------------------- */
+
+const MAX_TITLE_LENGTH = 30;
+const TYPING_INTERVAL_MS = 3;
+
 const BACKEND_API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080"; // Ensure port matches backend (8080 default)
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+
+const CHATS_ENDPOINT = `${BACKEND_API_URL}/chats`;
+const getMessagesEndpoint = (chatId: string) =>
+  `${CHATS_ENDPOINT}/${chatId}/messages`;
+const postMessageEndpoint = (chatId: string) =>
+  `${BACKEND_API_URL}/chat/${chatId}`;
+const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
+
+/* -------------------------------------------------------------------------- */
+/*                               Main Component                               */
+/* -------------------------------------------------------------------------- */
 
 export default function ChatPage() {
+  /* ------------------------------- State ---------------------------------- */
   const [inputValue, setInputValue] = useState("");
-  // State for chat list metadata
+
   const [chatList, setChatList] = useState<ChatMetadata[]>([]);
-  // State for messages of the currently active chat
   const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false); // For sending messages
-  const [isFetchingChats, setIsFetchingChats] = useState(true); // For initial chat list load
-  const [isFetchingMessages, setIsFetchingMessages] = useState(false); // For loading messages of a chat
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFetchingChats, setIsFetchingChats] = useState(true);
+  const [isFetchingMessages, setIsFetchingMessages] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
-  const [isDeletingChat, setIsDeletingChat] = useState(false); // <-- Add state for delete operation
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
+
+  /* ------------------------------ Refs ------------------------------------ */
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeTypingMessageId = useRef<string | null>(null);
 
-  // --- API Endpoints ---
-  const CHATS_ENDPOINT = `${BACKEND_API_URL}/chats`;
-  const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
-  const postMessageEndpoint = (chatId: string) => `${BACKEND_API_URL}/chat/${chatId}`;
-  const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`; // <-- Add delete endpoint URL
+  /* ------------------------- Derived Booleans ----------------------------- */
+  const interactionDisabled = useMemo(
+    () =>
+      isLoading ||
+      isFetchingMessages ||
+      isFetchingChats ||
+      isCreatingChat ||
+      isDeletingChat ||
+      !!activeTypingMessageId.current,
+    [
+      isLoading,
+      isFetchingMessages,
+      isFetchingChats,
+      isCreatingChat,
+      isDeletingChat,
+    ],
+  );
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  /* ------------------------------------------------------------------------ */
+  /*                               Utilities                                  */
+  /* ------------------------------------------------------------------------ */
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior });
+    });
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [currentMessages]);
-
-  // --- Fetch Messages for a Specific Chat ---
-  const fetchMessages = useCallback(async (chatId: string) => {
-    if (!chatId) return;
-    console.log(`Fetching messages for chat: ${chatId}`);
-    setIsFetchingMessages(true);
-    setCurrentMessages([]); // Clear messages when switching chats
-    try {
-      const response = await fetch(getMessagesEndpoint(chatId));
-      if (!response.ok) {
-         // Handle 404 specifically maybe?
-         if (response.status === 404) {
-            console.error(`Chat not found on backend: ${chatId}`);
-            // TODO: Handle this - maybe remove chat from list or show error
-            // If a chat is not found when fetching messages, remove it from the list
-            setChatList(prev => prev.filter(chat => chat.id !== chatId));
-            setActiveChatId(null); // Deactivate
-            // Optionally select the next chat or create a new one
-            // For now, just clear the view
-         }
-         throw new Error(`Failed to fetch messages: ${response.statusText}`);
-      }
-      const messagesData: Message[] = await response.json();
-       // Timestamps from Firestore via FastAPI should be ISO strings
-      // Sort client-side just in case, though backend should order
-      messagesData.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      // This will replace the optimistic message + any previous state
-      setCurrentMessages(messagesData);
-      console.log(`Loaded ${messagesData.length} messages for chat ${chatId}`);
-    } catch (error) {
-      console.error("Error fetching messages:", error);
-      // TODO: Show error to user (e.g., toast notification) without clearing chat
-    } finally {
-      setIsFetchingMessages(false);
+  const clearTypingEffect = useCallback(() => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
     }
-  }, []); // <-- fetchMessages is stable
+  }, []);
 
-  // --- Initial Load: Fetch Chat List ---
+  /* ------------------------------------------------------------------------ */
+  /*                             Data Fetching                                */
+  /* ------------------------------------------------------------------------ */
+
+  const fetchMessages = useCallback(
+    async (chatId: string) => {
+      if (!chatId) return;
+
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
+      setIsFetchingMessages(true);
+      setCurrentMessages([]);
+
+      try {
+        const res = await fetch(getMessagesEndpoint(chatId));
+
+        if (!res.ok) {
+          if (res.status === 404) {
+            setChatList((prev) => prev.filter((c) => c.id !== chatId));
+            setActiveChatId(null);
+            return;
+          }
+          throw new Error(`Failed to fetch messages: ${res.statusText}`);
+        }
+
+        const data: Message[] = await res.json();
+        data.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+        );
+        setCurrentMessages(data);
+        scrollToBottom("instant");
+      } catch (err) {
+        if (!(err instanceof Error && err.message.includes("404"))) {
+          console.error("Error fetching messages:", err);
+        }
+      } finally {
+        setIsFetchingMessages(false);
+      }
+    },
+    [clearTypingEffect],
+  );
+
+  /* --------------------------- Initial Load ------------------------------- */
+
   useEffect(() => {
     const loadInitialChats = async () => {
-      console.log("Fetching initial chat list...");
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
       setIsFetchingChats(true);
-      setChatList([]);
-      setActiveChatId(null);
-      setCurrentMessages([]);
+
       try {
-        const response = await fetch(CHATS_ENDPOINT);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch chats: ${response.statusText}`);
-        }
-        const chatsData: ChatMetadata[] = await response.json();
+        const res = await fetch(CHATS_ENDPOINT);
+        if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
 
-        // Backend already sorts by lastActivity descending
-        setChatList(chatsData);
+        const chats: ChatMetadata[] = await res.json();
+        setChatList(chats);
 
-        if (chatsData && chatsData.length > 0) {
-          console.log(`Found ${chatsData.length} existing chats.`);
-          // Activate the most recent chat (first in the list)
-          const mostRecentChatId = chatsData[0].id;
-          setActiveChatId(mostRecentChatId);
-          // Fetch messages for the activated chat
-          await fetchMessages(mostRecentChatId); // fetchMessages is now stable
+        if (chats.length) {
+          setActiveChatId(chats[0].id);
+          await fetchMessages(chats[0].id);
         } else {
-          console.log("No existing chats found. Creating a new one.");
-          // If no chats exist, create the very first one
-          await handleNewChat(); // handleNewChat now fetches messages internally
+          await handleNewChat();
         }
-      } catch (error) {
-        console.error("Error fetching initial chats:", error);
-        // Optionally try creating a new chat even if fetching failed
-        // await handleNewChat(); // Be careful not to loop infinitely on errors
-        // TODO: Show error to user
+      } catch (err) {
+        console.error("Error fetching initial chats:", err);
       } finally {
         setIsFetchingChats(false);
       }
@@ -136,257 +186,250 @@ export default function ChatPage() {
 
     loadInitialChats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchMessages]); // <-- Add fetchMessages dependency
+  }, [fetchMessages]);
 
-  // --- Function to Start a New Chat ---
+  /* ------------------------------------------------------------------------ */
+  /*                            Chat Operations                               */
+  /* ------------------------------------------------------------------------ */
+
   const handleNewChat = useCallback(async () => {
-    console.log("Creating new chat via API...");
-    setIsCreatingChat(true); // <-- Use the new state
+    clearTypingEffect();
+    activeTypingMessageId.current = null;
+    setIsCreatingChat(true);
+
     try {
-      const response = await fetch(CHATS_ENDPOINT, { method: "POST" });
-      if (!response.ok) {
-        throw new Error(`Failed to create new chat: ${response.statusText}`);
-      }
-      // Backend response includes id, title, and initial messages
-      const newChatData: { id: string; title: string; messages: Message[] } = await response.json();
+      const res = await fetch(CHATS_ENDPOINT, { method: "POST" });
+      if (!res.ok) throw new Error(`Failed to create chat: ${res.statusText}`);
 
-      console.log(`New chat created with ID: ${newChatData.id}`);
+      const {
+        id,
+        title,
+        messages,
+      }: { id: string; title: string; messages: Message[] } = await res.json();
 
-      // Add new chat metadata to the beginning of the list
-      const newMetadata: ChatMetadata = {
-          id: newChatData.id,
-          title: newChatData.title,
-          // Approximate client-side time, backend has the accurate ones
-          // Fetching the list again would be more accurate but slower
-          lastActivity: new Date().toISOString(),
-      }
-      // Prepend to list
-      setChatList((prev) => [newMetadata, ...prev]);
+      const newMeta: ChatMetadata = {
+        id,
+        title,
+        lastActivity: new Date().toISOString(),
+      };
 
-      // Activate the new chat
-      setActiveChatId(newChatData.id);
-      // Set the initial messages returned by the API
-      setCurrentMessages(newChatData.messages);
-      setInputValue(""); // Clear input
-
-    } catch (error) {
-      console.error("Error creating new chat:", error);
-      // TODO: Show error to user
+      setChatList((prev) => [newMeta, ...prev]);
+      setActiveChatId(id);
+      setCurrentMessages(messages);
+      setInputValue("");
+      scrollToBottom("instant");
+    } catch (err) {
+      console.error("Error creating new chat:", err);
     } finally {
-      setIsCreatingChat(false); // <-- Use the new state
+      setIsCreatingChat(false);
     }
-  }, []); // No dependencies needed if CHATS_ENDPOINT is stable
+  }, [clearTypingEffect]);
 
-  // --- Function to Switch Active Chat ---
   const handleSelectChat = (chatId: string) => {
-    if (chatId === activeChatId || isDeletingChat) return; // Do nothing if already active or deleting
-    console.log(`Switching to chat: ${chatId}`);
+    if (chatId === activeChatId || isDeletingChat) return;
+
+    clearTypingEffect();
+    activeTypingMessageId.current = null;
     setActiveChatId(chatId);
-    // Fetch messages for the newly selected chat
     fetchMessages(chatId);
   };
 
-  // --- Function to Handle Sending a Message ---
-  const handleSendMessage = async () => {
-    const trimmedInput = inputValue.trim();
-    if (!trimmedInput || !activeChatId || isLoading || isFetchingMessages || isDeletingChat) return;
+  const handleDeleteChat = async (chatId: string) => {
+    if (!chatId || isDeletingChat) return;
 
-    console.log(`Sending message to chat ${activeChatId}: ${trimmedInput}`);
-    setInputValue(""); // Clear input immediately after grabbing value
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this chat and all its messages?",
+      )
+    )
+      return;
 
-    // --- Optimistic UI Update ---
-    const optimisticUserMessage: Message = {
-      // Use a temporary ID, backend response will provide the real one via fetchMessages
-      id: `temp-${Date.now()}`,
-      text: trimmedInput,
-      sender: "user",
-      timestamp: new Date().toISOString(), // Use current time for optimistic display
-    };
+    if (activeTypingMessageId.current && chatId === activeChatId) {
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
+    }
 
-    // Add user message immediately
-    setCurrentMessages((prevMessages) => [...prevMessages, optimisticUserMessage]);
-
-    setIsLoading(true); // Show "Thinking..." indicator *after* user message
-
+    setIsDeletingChat(true);
     try {
-      // 1. Call Backend API to process query and save messages
-      //    The endpoint now includes the chat_id
-      const response = await fetch(postMessageEndpoint(activeChatId), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmedInput }), // Send original trimmed input
-      });
+      const res = await fetch(deleteChatEndpoint(chatId), { method: "DELETE" });
 
-      if (!response.ok) {
-        // Try to get error details
-        let errorDetails = `Error: ${response.status} ${response.statusText}`;
-        try {
-          const errorData = await response.json();
-          errorDetails = errorData.detail || errorDetails;
-        } catch (e) { /* Ignore if response not JSON */ }
-        // Remove the optimistic message on backend error before throwing
-        setCurrentMessages((prev) => prev.filter(msg => msg.id !== optimisticUserMessage.id));
-        throw new Error(`Backend query failed: ${errorDetails}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Failed to delete chat: ${errText || res.statusText}`);
       }
 
-      // Backend handled saving user & bot message. Response is QueryResponse.
-      // We don't *need* the response data here if we re-fetch messages.
-      // const queryResponse = await response.json(); // Contains answer, chunks
-      await response.json(); // Still need to consume the response body
-      console.log("Backend processed message successfully.");
+      const remaining = chatList.filter((c) => c.id !== chatId);
+      setChatList(remaining);
 
-      // 2. Re-fetch messages for the current chat to update UI *reliably*
-      // This will replace the optimistic message with the real one from the DB
-      // and add the bot's response.
-      await fetchMessages(activeChatId);
-
-      // 3. Update chat list metadata (title might have changed, lastActivity definitely did)
-      //    Find the chat in the list and update its title/activity time
-      setChatList(prevList => {
-          const chatIndex = prevList.findIndex(chat => chat.id === activeChatId);
-          if (chatIndex === -1) return prevList; // Should not happen
-
-          const updatedChat = { ...prevList[chatIndex] };
-          updatedChat.lastActivity = new Date().toISOString(); // Update activity time
-
-          // Check if title needs update (was "New Chat")
-          // Use the optimistic message text for potential title update
-          if (updatedChat.title === "New Chat") {
-              const potentialNewTitle = optimisticUserMessage.text.substring(0, MAX_TITLE_LENGTH) +
-                  (optimisticUserMessage.text.length > MAX_TITLE_LENGTH ? "..." : "");
-              updatedChat.title = potentialNewTitle;
-          }
-
-          // Create new list, move updated chat to top, keep rest sorted by original fetch order (or re-sort)
-          const newList = [
-              updatedChat,
-              ...prevList.slice(0, chatIndex),
-              ...prevList.slice(chatIndex + 1)
-          ];
-          // Optionally re-sort the whole list by lastActivity again if strict order is needed
-          // newList.sort((a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime());
-          return newList;
-      });
-
-
-    } catch (error) {
-      console.error("Failed to send message or fetch update:", error);
-      // Error message is now added *after* the optimistic message might have been removed
-      const errorTimestamp = new Date().toISOString();
-      const errorMessage: Message = {
-        id: `error-${errorTimestamp}`, // Temporary ID
-        text: `Sorry, failed to send message. ${error instanceof Error ? error.message : 'Please try again.'}`,
-        sender: "bot", // Display as a bot message for consistency
-        timestamp: errorTimestamp,
-      };
-      // Append the error message locally for immediate feedback
-      // Check if the optimistic message still exists before adding the error
-      setCurrentMessages((prev) => {
-          // If the optimistic message wasn't removed by the specific backend error handling,
-          // keep it and add the error. Otherwise, just add the error.
-          const optimisticExists = prev.some(msg => msg.id === optimisticUserMessage.id);
-          if (optimisticExists) {
-              return [...prev, errorMessage];
-          } else {
-              // If the optimistic message was already removed due to backend error,
-              // find the last actual message to add the error after.
-              // This part might need refinement based on desired UX for cascading errors.
-              // For simplicity now, just add the error to the end.
-              return [...prev, errorMessage];
-          }
-      });
-      // TODO: Better error display (e.g., toast)
+      if (activeChatId === chatId) {
+        if (remaining.length) {
+          setActiveChatId(remaining[0].id);
+          await fetchMessages(remaining[0].id);
+        } else {
+          setActiveChatId(null);
+          setCurrentMessages([]);
+          await handleNewChat();
+        }
+      }
+    } catch (err) {
+      console.error("Error deleting chat:", err);
+      alert(
+        `Failed to delete chat: ${err instanceof Error ? err.message : "Unknown"}`,
+      );
     } finally {
-      // This will remove the "Thinking..." indicator after fetchMessages completes or an error occurs.
+      setIsDeletingChat(false);
+    }
+  };
+
+  /* ------------------------------------------------------------------------ */
+  /*                             Message Send                                 */
+  /* ------------------------------------------------------------------------ */
+
+  const startTypingEffect = useCallback(
+    (messageId: string, fullText: string) => {
+      clearTypingEffect();
+      activeTypingMessageId.current = messageId;
+
+      let idx = 0;
+      const typeStep = () => {
+        if (activeTypingMessageId.current !== messageId) return;
+
+        idx += 1;
+        setCurrentMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, text: fullText.slice(0, idx) } : m,
+          ),
+        );
+        scrollToBottom("smooth");
+
+        if (idx < fullText.length) {
+          typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
+        } else {
+          activeTypingMessageId.current = null;
+          typingTimeoutRef.current = null;
+          scrollToBottom("smooth");
+        }
+      };
+
+      typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
+    },
+    [clearTypingEffect],
+  );
+
+  const handleSendMessage = async () => {
+    const trimmed = inputValue.trim();
+    if (!activeChatId || !trimmed || interactionDisabled) return;
+
+    setInputValue("");
+
+    const optimistic: Message = {
+      id: `temp-${Date.now()}`,
+      text: trimmed,
+      sender: "user",
+      timestamp: new Date().toISOString(),
+    };
+
+    setCurrentMessages((prev) => [...prev, optimistic]);
+    scrollToBottom();
+
+    setIsLoading(true);
+
+    try {
+      const res = await fetch(postMessageEndpoint(activeChatId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: trimmed }),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Backend query failed: ${err || res.statusText}`);
+      }
+
+      const {
+        user_message,
+        bot_message,
+      }: { user_message: Message; bot_message: Message } = await res.json();
+
+      const placeholder: Message = { ...bot_message, text: "" };
+
+      setIsLoading(false);
+      setCurrentMessages((prev) => [
+        ...prev.filter((m) => m.id !== optimistic.id),
+        user_message,
+        placeholder,
+      ]);
+      scrollToBottom();
+
+      setTimeout(() => startTypingEffect(bot_message.id, bot_message.text), 50);
+
+      /* ---------------------- Chat list metadata -------------------------- */
+      setChatList((prev) => {
+        const idx = prev.findIndex((c) => c.id === activeChatId);
+        if (idx === -1) return prev;
+
+        const updated = { ...prev[idx] };
+        updated.lastActivity = bot_message.timestamp;
+        if (updated.title === "New Chat") {
+          const newTitle =
+            user_message.text.slice(0, MAX_TITLE_LENGTH) +
+            (user_message.text.length > MAX_TITLE_LENGTH ? "..." : "");
+          updated.title = newTitle;
+        }
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    } catch (err) {
+      console.error("Failed to send message:", err);
+
+      const errorMsg: Message = {
+        id: `error-${Date.now()}`,
+        text: `Sorry, failed to process message. ${
+          err instanceof Error ? err.message : ""
+        }`,
+        sender: "bot",
+        timestamp: new Date().toISOString(),
+      };
+
+      setCurrentMessages((prev) => [
+        ...prev.filter((m) => m.id !== optimistic.id),
+        errorMsg,
+      ]);
+      scrollToBottom();
       setIsLoading(false);
     }
   };
 
-  // --- Function to Handle Deleting a Chat ---
-  const handleDeleteChat = async (chatIdToDelete: string) => {
-    if (!chatIdToDelete || isDeletingChat) return;
+  /* ------------------------------------------------------------------------ */
+  /*                             Event Helpers                                */
+  /* ------------------------------------------------------------------------ */
 
-    // Simple confirmation dialog
-    if (!window.confirm("Are you sure you want to delete this chat and all its messages? This cannot be undone.")) {
-        return;
-    }
-
-    console.log(`Attempting to delete chat: ${chatIdToDelete}`);
-    setIsDeletingChat(true);
-
-    try {
-        const response = await fetch(deleteChatEndpoint(chatIdToDelete), {
-            method: "DELETE",
-        });
-
-        if (!response.ok) {
-            let errorDetails = `Error: ${response.status} ${response.statusText}`;
-            if (response.status === 404) {
-                errorDetails = "Chat not found on server.";
-                // Remove from list even if server says 404, might be out of sync
-                setChatList(prev => prev.filter(chat => chat.id !== chatIdToDelete));
-            } else {
-                try {
-                    const errorData = await response.json();
-                    errorDetails = errorData.detail || errorDetails;
-                } catch (e) { /* Ignore if response not JSON */ }
-            }
-            throw new Error(`Failed to delete chat: ${errorDetails}`);
-        }
-
-        console.log(`Successfully deleted chat: ${chatIdToDelete}`);
-
-        // Update chat list state
-        const remainingChats = chatList.filter(chat => chat.id !== chatIdToDelete);
-        setChatList(remainingChats);
-
-        // If the deleted chat was the active one, select the next available chat
-        if (activeChatId === chatIdToDelete) {
-            if (remainingChats.length > 0) {
-                // Activate the most recent remaining chat (first in the list)
-                const nextChatId = remainingChats[0].id;
-                setActiveChatId(nextChatId);
-                await fetchMessages(nextChatId); // Load messages for the new active chat
-            } else {
-                // No chats left, create a new one
-                setActiveChatId(null);
-                setCurrentMessages([]);
-                await handleNewChat(); // Create a fresh chat
-            }
-        }
-        // If a different chat was active, no need to change activeChatId or messages
-
-    } catch (error) {
-        console.error("Error deleting chat:", error);
-        // TODO: Show error to user (e.g., toast notification)
-        alert(`Failed to delete chat: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-        setIsDeletingChat(false);
+  const handleKeyPress = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!activeTypingMessageId.current) handleSendMessage();
     }
   };
 
-  // Handle Enter key press
-  const handleKeyPress = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleSendMessage();
-    }
-  };
+  const activeChatTitle =
+    chatList.find((c) => c.id === activeChatId)?.title ?? "Chat";
 
-  // --- Get Active Chat Title ---
-  const activeChatTitle = chatList.find(chat => chat.id === activeChatId)?.title ?? "Chat";
+  /* ------------------------------------------------------------------------ */
+  /*                                 Render                                   */
+  /* ------------------------------------------------------------------------ */
 
-  // --- Render Logic ---
   return (
     <div className="flex h-[calc(100vh-theme(spacing.14)-theme(spacing.6))] border rounded-lg overflow-hidden">
-      {/* Sidebar */}
+      {/* ------------------------------ Sidebar ----------------------------- */}
       <aside className="w-64 md:w-72 border-r flex flex-col bg-muted/30">
         <div className="p-4 border-b">
           <h2 className="text-lg font-semibold tracking-tight">Recent Chats</h2>
         </div>
+
         <ScrollArea className="flex-1 p-2 min-h-0">
           {isFetchingChats ? (
-            <div className="p-4 text-center text-muted-foreground">Loading chats...</div>
+            <div className="p-4 text-center text-muted-foreground">
+              Loading chats...
+            </div>
           ) : (
             <nav className="flex flex-col gap-1">
               {chatList.map((chat) => (
@@ -397,9 +440,9 @@ export default function ChatPage() {
                     chat.id === activeChatId
                       ? "bg-accent text-accent-foreground"
                       : ""
-                  }`}
+                  } hover:cursor-pointer`}
                   onClick={() => handleSelectChat(chat.id)}
-                  disabled={isFetchingMessages || isLoading || isFetchingChats || isCreatingChat || isDeletingChat} // <-- Disable during delete
+                  disabled={interactionDisabled}
                 >
                   <span className="truncate">{chat.title}</span>
                 </Button>
@@ -407,32 +450,33 @@ export default function ChatPage() {
             </nav>
           )}
         </ScrollArea>
+
         <div className="p-4 border-t mt-auto">
           <Button
             className="w-full"
             onClick={handleNewChat}
-            disabled={isLoading || isFetchingChats || isFetchingMessages || isCreatingChat || isDeletingChat} // <-- Disable during delete
+            disabled={interactionDisabled}
           >
-            {isCreatingChat ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {isCreatingChat && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             New Chat
           </Button>
         </div>
       </aside>
 
-      {/* Main Chat Area */}
+      {/* --------------------------- Main  Chat ----------------------------- */}
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="p-4 border-b flex items-center justify-between bg-background/95">
-          <h1 className="text-xl font-bold tracking-tight truncate mr-2"> {/* Added margin-right */}
+          <h1 className="text-xl font-bold tracking-tight truncate mr-2">
             {activeChatTitle}
           </h1>
-          {/* Delete Chat Button */}
-          {activeChatId && ( // Only show if a chat is active
+
+          {activeChatId && (
             <Button
               variant="ghost"
               size="icon"
               onClick={() => handleDeleteChat(activeChatId)}
-              disabled={isDeletingChat || isFetchingChats || isCreatingChat} // Disable while deleting/loading/creating
-              className="text-muted-foreground hover:text-destructive" // Style for delete
+              disabled={interactionDisabled}
+              className="text-muted-foreground hover:text-destructive hover:cursor-pointer disabled:cursor-not-allowed"
               title="Delete this chat"
             >
               {isDeletingChat ? (
@@ -444,50 +488,77 @@ export default function ChatPage() {
             </Button>
           )}
         </div>
+
+        {/* -------------------------- Messages ------------------------------ */}
         <ScrollArea className="flex-1 p-4 min-h-0" id="message-scroll-area">
           <div className="space-y-4">
-            {/* Only show full loading indicator on initial load/switch, not during send/reply */}
-            {isFetchingMessages && !isLoading && currentMessages.length === 0 && (
+            {isFetchingMessages && !currentMessages.length && (
               <div className="flex justify-center items-center p-4">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-muted-foreground">Loading messages...</span>
+                <span className="ml-2 text-muted-foreground">
+                  Loading messages...
+                </span>
               </div>
             )}
-            {/* Render messages if not doing an initial fetch OR if we are loading but already have messages (optimistic update) */}
-            {(!isFetchingMessages || currentMessages.length > 0) && currentMessages.map((message) => (
+
+            {currentMessages.map((m) => (
               <div
-                // Use Firestore message ID for the key - this is crucial for React updates
-                key={message.id}
+                key={m.id}
                 className={`flex ${
-                  message.sender === "user" ? "justify-end" : "justify-start"
+                  m.sender === "user" ? "justify-end" : "justify-start"
                 }`}
               >
                 <div
                   className={`max-w-[75%] rounded-lg px-4 py-2 ${
-                    message.sender === "user"
+                    m.sender === "user"
                       ? "bg-primary text-primary-foreground"
-                      : "bg-muted"
+                      : "bg-muted message-reveal"
                   }`}
                 >
-                  {/* Use ReactMarkdown for bot messages, plain text for user */}
-                  {message.sender === "bot" ? (
+                  {m.sender === "bot" ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm, remarkBreaks]}
                       components={{
-                        // Customize rendering if needed
-                        p: ({ node, ...props }) => <p className="mb-0" {...props} />, // Remove default margins
+                        p: ({ node, ...props }) => <p className="mb-0" {...props} />,
                       }}
                     >
-                      {message.text}
+                      {m.text || ""}
                     </ReactMarkdown>
                   ) : (
-                    message.text // Render user text directly
+                    m.text
                   )}
+
+                  {/* ---- Reviewed Documents dropdown ---- */}
+                  {m.sender === "bot" && m.sources?.length ? (
+                    <details className="mt-2 text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        Reviewed Documents ({m.sources.length})
+                      </summary>
+                      <ul className="ml-4 list-disc">
+                        {m.sources.map((s) => (
+                          <li key={s.id}>
+                            {s.uri ? (
+                              <a
+                                href={s.uri}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="underline"
+                              >
+                                {s.name}
+                              </a>
+                            ) : (
+                              s.name
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
                 </div>
               </div>
             ))}
-            {/* Loading indicator when waiting for bot response */}
-            {isLoading && activeChatId && (
+
+            {isLoading && (
               <div className="flex justify-start">
                 <div className="p-3 max-w-[75%] text-sm rounded-lg bg-muted flex items-center space-x-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -495,29 +566,42 @@ export default function ChatPage() {
                 </div>
               </div>
             )}
-            {/* End of messages ref */}
+
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
+
+        {/* -------------------------- Input --------------------------------- */}
         <div className="p-4 border-t bg-background/95">
-          <div className="relative">
+          <div className="flex items-center gap-2">
             <Input
               type="text"
               placeholder="Type your message..."
-              className="pr-16" // Make space for the button
+              className="flex-1"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyPress={handleKeyPress}
-              disabled={isLoading || isFetchingMessages || isFetchingChats || isCreatingChat || isDeletingChat || !activeChatId} // <-- Disable during delete
+              disabled={interactionDisabled || !activeChatId}
             />
+
             <Button
-              type="submit" // Can be submit if wrapped in a form, or just button
               size="icon"
-              className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8"
+              className="h-9 w-9"
               onClick={handleSendMessage}
-              disabled={isLoading || isFetchingMessages || isFetchingChats || isCreatingChat || isDeletingChat || !activeChatId || !inputValue.trim()} // <-- Disable during delete
+              disabled={
+                interactionDisabled ||
+                !activeChatId ||
+                !inputValue.trim()
+              }
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" /></svg>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="w-5 h-5"
+              >
+                <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+              </svg>
               <span className="sr-only">Send</span>
             </Button>
           </div>

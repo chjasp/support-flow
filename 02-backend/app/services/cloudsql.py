@@ -47,7 +47,10 @@ class CloudSqlRepository:
             if conn:
                 conn.close()
                 logging.debug("Cloud SQL connection closed.")
-
+                
+    def _to_pgvector(self, vec: List[float]) -> str:
+        # keep it dense → smaller payload, less parsing time
+        return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
     def list_documents(self) -> List[DocumentItem]:
         """Lists all documents from the Cloud SQL database."""
@@ -154,11 +157,8 @@ class CloudSqlRepository:
         results = []
         cur = None
         # Convert the Python list vector to the string format expected by pgvector/pg8000
-        vector_string = str(query_vector)
+        vector_string = self._to_pgvector(query_vector)
 
-        # Use L2 distance (<->) for models like text-embedding-004.
-        # Use cosine distance (<=>) if your model prefers it. Check model docs.
-        # text-embedding-004 uses cosine similarity, so <=> is appropriate.
         sql = """
             SELECT
                 c.id,

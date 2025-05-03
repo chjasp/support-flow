@@ -252,9 +252,6 @@ def _gemini_extract(pdf_part: genai_types.Part) -> list[dict]:
         return output_data
 
     except Exception as e:
-        # Catch specific Google API errors if possible for better logging
-        # Example: from google.api_core import exceptions as google_exceptions
-        # except google_exceptions.GoogleAPIError as api_error: ...
         logger.error("Error during Gemini extraction: %s", e)
         logger.debug(traceback.format_exc())
         # Include raw response in debug logs if available and not already logged
