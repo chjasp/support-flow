@@ -44,11 +44,10 @@ type KnowledgeItem = {
 
 
 // --- Define Backend URLs (Use Environment Variables in production) ---
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"; // Your FastAPI backend URL
 const GENERATE_UPLOAD_URL_ENDPOINT = "/api/generate-upload-url"; // Next.js API route
-const GET_ITEMS_ENDPOINT = `${API_BASE_URL}/documents`; // Add the new endpoint URL
-const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Define the base URL for delete
+const GET_ITEMS_ENDPOINT = '/api/documents'; // Use relative path
+const DELETE_ITEM_ENDPOINT = '/api/documents'; // Use relative path (base)
+const ITEMS_PER_PAGE = 10; // Define items per page for pagination
 
 export default function KnowledgeBasePage() {
   const { data: session, status } = useSession(); // Get session
@@ -61,6 +60,13 @@ export default function KnowledgeBasePage() {
   const [pastedContent, setPastedContent] = useState("");
   const [isLoading, setIsLoading] = useState(false); // Loading state for uploads/saves
   const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep initial loading state
+  const [currentPage, setCurrentPage] = useState(1); // Add state for current page
+
+  // --- Pagination Calculations ---
+  const totalPages = Math.ceil(knowledgeItems.length / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const currentItems = knowledgeItems.slice(startIndex, endIndex);
 
   // --- Fetch Data Logic (extracted) ---
   const fetchKnowledgeItems = useCallback(async () => {
@@ -184,6 +190,15 @@ export default function KnowledgeBasePage() {
     if (event.target.files) {
       setSelectedFiles(Array.from(event.target.files));
     }
+  };
+
+  // --- Pagination Handlers ---
+  const handlePreviousPage = () => {
+    setCurrentPage((prev) => Math.max(prev - 1, 1)); // Ensure page doesn't go below 1
+  };
+
+  const handleNextPage = () => {
+    setCurrentPage((prev) => Math.min(prev + 1, totalPages)); // Ensure page doesn't exceed totalPages
   };
 
   const handleUploadFiles = async () => {
@@ -398,7 +413,7 @@ export default function KnowledgeBasePage() {
         try {
             const errorText = await uploadResponse.text();
             gcsErrorDetails += ` - ${errorText}`;
-        } catch (_) { /* Ignore if can't read text */ }
+        } catch { /* Ignore if can't read text */ }
         throw new Error(gcsErrorDetails);
       }
       console.log(`Successfully uploaded text content as ${filename} to ${gcsUri}`);
@@ -455,6 +470,7 @@ export default function KnowledgeBasePage() {
 
     // 4. Optimistic UI update: Remove the item immediately (applies to both cases)
     setKnowledgeItems((prev) => prev.filter((item) => item.id !== id));
+    setCurrentPage(1); // Reset to first page after deleting an item
 
     // 5. If it wasn't a client-side failure, proceed with backend deletion
     if (!isClientSideFailure) {
@@ -482,11 +498,11 @@ export default function KnowledgeBasePage() {
           try {
               const errorData = await response.json();
               errorDetails += ` - ${errorData.detail || JSON.stringify(errorData)}`;
-          } catch (parseError) {
+          } catch { // Removed unused 'parseError' variable
               try {
                   const errorText = await response.text();
                   errorDetails += ` - ${errorText || 'No further details'}`;
-              } catch (textError) { /* Ignore */ }
+              } catch { /* Ignore */ } // Removed unused 'textError' variable
           }
           throw new Error(`Failed to delete item from backend: ${errorDetails}`);
         }
@@ -515,9 +531,9 @@ export default function KnowledgeBasePage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-theme(space.14))] bg-background">
+    <div className="flex h-[calc(100vh-theme(space.14)-theme(space.6))] w-full bg-background">
       {" "}
-      {/* Adjust height based on header */}
+      {/* Adjust height based on header AND layout padding, add w-full */}
       {/* Sidebar */}
       <aside className="w-64 border-r p-4 flex flex-col space-y-2 overflow-y-auto">
         <h2 className="text-xl font-semibold mb-4">Knowledge Base</h2>
@@ -535,14 +551,6 @@ export default function KnowledgeBasePage() {
         >
           <FileUp className="mr-2 h-4 w-4" /> Upload
         </Button>
-        {/* Optional: Add Summary Stats here */}
-        {/*
-         <div className="mt-auto pt-4 border-t">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">Stats</h3>
-            <p className="text-xs">Total Items: {knowledgeItems.length}</p>
-            <p className="text-xs">Ready: {knowledgeItems.filter(i => i.status === 'Ready').length}</p>
-         </div>
-         */}
       </aside>
       {/* Main Content Area */}
       <main className="flex-1 p-6 overflow-auto">
@@ -604,7 +612,7 @@ export default function KnowledgeBasePage() {
                         </TableCell>
                       </TableRow>
                     ) : knowledgeItems.length > 0 ? (
-                      knowledgeItems.map((item) => (
+                      currentItems.map((item) => (
                         <TableRow key={item.id}>
                           <TableCell className="font-medium">
                             {item.name}
@@ -674,7 +682,8 @@ export default function KnowledgeBasePage() {
                           colSpan={5}
                           className="text-center text-muted-foreground h-24"
                         >
-                          No knowledge items found. Add some!
+                          {/* Update empty message check */}
+                          {knowledgeItems.length === 0 ? "No knowledge items found. Add some!" : "No items on this page."}
                         </TableCell>
                       </TableRow>
                     )}
@@ -682,6 +691,33 @@ export default function KnowledgeBasePage() {
                 </Table>
               </CardContent>
             </Card>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && ( // Only show pagination if there's more than one page
+              <div className="flex items-center justify-end space-x-2 py-4">
+                <span className="text-sm text-muted-foreground">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePreviousPage}
+                  disabled={currentPage === 1}
+                  className="cursor-pointer"
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleNextPage}
+                  disabled={currentPage === totalPages}
+                  className="cursor-pointer"
+                >
+                  Next
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

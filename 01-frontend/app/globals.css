@@ -121,3 +121,8 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Add this rule for the scatter plot dots */
+.scatter-chart-container .recharts-symbols {
+  cursor: pointer;
+}

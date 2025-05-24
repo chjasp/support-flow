@@ -4,7 +4,7 @@ import * as React from "react"
 import Link from "next/link"
 import { useSession, signIn, signOut } from "next-auth/react"
 import { Button } from "@/components/ui/button"
-import { LogIn, LogOut, User as UserIcon } from "lucide-react"
+import { LogIn, LogOut } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import {
@@ -23,7 +23,7 @@ export function MainNav({
   const isLoading = status === "loading"
 
   return (
-    <div className={cn("flex w-full items-center justify-between px-4", className)} {...props}>
+    <div className={cn("flex w-full items-center justify-between", className)} {...props}>
       <div className="flex items-center space-x-6">
         <Link href="/" className="mr-6 flex items-center space-x-2">
           <span className="font-bold sm:inline-block">
@@ -35,7 +35,14 @@ export function MainNav({
             <NavigationMenuItem>
               <NavigationMenuLink asChild>
                 <Link href="/" className={navigationMenuTriggerStyle()}>
-                  Dashboard
+                  Home
+                </Link>
+              </NavigationMenuLink>
+            </NavigationMenuItem>
+            <NavigationMenuItem>
+              <NavigationMenuLink asChild>
+                <Link href="/knowledge-base" className={navigationMenuTriggerStyle()}>
+                  Upload
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
@@ -43,20 +50,6 @@ export function MainNav({
               <NavigationMenuLink asChild>
                 <Link href="/chat" className={navigationMenuTriggerStyle()}>
                   Chat
-                </Link>
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-            <NavigationMenuItem>
-              <NavigationMenuLink asChild>
-                <Link href="/mail" className={navigationMenuTriggerStyle()}>
-                  Mail
-                </Link>
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-            <NavigationMenuItem>
-              <NavigationMenuLink asChild>
-                <Link href="/knowledge-base" className={navigationMenuTriggerStyle()}>
-                  Knowledge Base
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
