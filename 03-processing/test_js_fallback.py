@@ -80,6 +80,7 @@ sys.modules['sklearn.preprocessing'] = MagicMock(StandardScaler=MagicMock())
 
 dummy_requests_html = types.ModuleType('requests_html')
 dummy_requests_html.HTMLSession = MagicMock(return_value=MagicMock())
+dummy_requests_html.AsyncHTMLSession = MagicMock(return_value=MagicMock())
 sys.modules['requests_html'] = dummy_requests_html
 
 from scraper import WebDocumentProcessor

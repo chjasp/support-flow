@@ -57,6 +57,10 @@ class DummySession:
 dummy_requests.Response = DummyResp
 dummy_requests.Session = DummySession
 sys.modules['requests'] = dummy_requests
+dummy_requests_html = types.ModuleType('requests_html')
+dummy_requests_html.HTMLSession = MagicMock(return_value=MagicMock())
+dummy_requests_html.AsyncHTMLSession = MagicMock(return_value=MagicMock())
+sys.modules['requests_html'] = dummy_requests_html
 sys.modules['numpy'] = MagicMock()
 sys.modules['umap'] = MagicMock()
 sys.modules['sklearn'] = MagicMock()
