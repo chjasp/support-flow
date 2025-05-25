@@ -26,6 +26,7 @@ import {
   ClipboardPaste,
   Loader2,
   RefreshCw,
+  Globe,
 } from "lucide-react"; // Example icons
 import { useSession } from "next-auth/react"; // Import useSession
 import { authFetch } from "@/lib/authFetch";
@@ -59,6 +60,9 @@ export default function KnowledgeBasePage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pastedTitle, setPastedTitle] = useState("");
   const [pastedContent, setPastedContent] = useState("");
+  const [urlList, setUrlList] = useState("");
+  const [urlDescription, setUrlDescription] = useState("");
+  const [isProcessingUrls, setIsProcessingUrls] = useState(false);
   const [isLoading, setIsLoading] = useState(false); // Loading state for uploads/saves
   const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep initial loading state
   const [currentPage, setCurrentPage] = useState(1); // Add state for current page
@@ -439,6 +443,47 @@ export default function KnowledgeBasePage() {
     }
   };
 
+  const handleProcessUrls = async () => {
+    const urls = urlList
+      .split("\n")
+      .map((u) => u.trim())
+      .filter((u) => u);
+    if (urls.length === 0) {
+      alert("Please enter one or more URLs.");
+      return;
+    }
+
+    setIsProcessingUrls(true);
+    try {
+      const response = await authFetch(session, "/api/web/process-urls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls, description: urlDescription }),
+      });
+
+      if (!response.ok) {
+        let errorText = await response.text();
+        throw new Error(
+          `Failed to process URLs: ${response.status} ${response.statusText} ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+      alert(
+        data.message ||
+          `Started processing ${urls.length} URL(s). They will appear once ready.`
+      );
+      setUrlList("");
+      setUrlDescription("");
+    } catch (error) {
+      console.error("Error processing URLs:", error);
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Error processing URLs: ${message}`);
+    } finally {
+      setIsProcessingUrls(false);
+    }
+  };
+
   const handleDeleteItem = async (id: string, name: string) => {
     // 1. Find the item in the current state
     const itemToDelete = knowledgeItems.find(item => item.id === id);
@@ -717,7 +762,7 @@ export default function KnowledgeBasePage() {
               Add to Knowledge Base
             </h1>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Section 1: Upload Files */}
               <Card>
                 <CardHeader>
@@ -836,6 +881,59 @@ export default function KnowledgeBasePage() {
                       </>
                     ) : (
                       "Upload Pasted Text"
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Section 3: Import URLs */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Globe className="mr-2 h-5 w-5" /> Add URLs
+                  </CardTitle>
+                  <CardDescription>
+                    Provide one or more URLs to scrape and add to the knowledge base.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <label htmlFor="url-list" className="block text-sm font-medium mb-1">
+                      URLs <span className="text-red-500">*</span>
+                    </label>
+                    <Textarea
+                      id="url-list"
+                      value={urlList}
+                      onChange={(e) => setUrlList(e.target.value)}
+                      placeholder="https://example.com/page1\nhttps://example.com/page2"
+                      rows={4}
+                      required
+                      disabled={isProcessingUrls}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="url-description" className="block text-sm font-medium mb-1">
+                      Description
+                    </label>
+                    <Input
+                      id="url-description"
+                      value={urlDescription}
+                      onChange={(e) => setUrlDescription(e.target.value)}
+                      placeholder="Optional description"
+                      disabled={isProcessingUrls}
+                    />
+                  </div>
+                  <Button
+                    onClick={handleProcessUrls}
+                    disabled={isProcessingUrls || urlList.trim() === ""}
+                    className="cursor-pointer"
+                  >
+                    {isProcessingUrls ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...
+                      </>
+                    ) : (
+                      "Process URLs"
                     )}
                   </Button>
                 </CardContent>
