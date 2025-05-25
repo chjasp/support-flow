@@ -16,7 +16,7 @@ import umap
 
 import vertexai
 from vertexai.language_models import TextEmbeddingModel
-from google.cloud.sql.connector import Connector
+from google.cloud.sql.connector import Connector, IPTypes
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -29,6 +29,8 @@ INSTANCE_CONNECTION_NAME = os.environ.get("CLOUD_SQL_INSTANCE", "test:instance")
 DB_USER = os.environ.get("CLOUD_SQL_USER", "test-user")
 DB_PASS = os.environ.get("CLOUD_SQL_PASSWORD", "test-pass")
 DB_NAME = os.environ.get("CLOUD_SQL_DB", "test-db")
+IP_TYPE_ENV = os.environ.get("CLOUD_SQL_IP_TYPE", "PRIVATE").upper()
+IP_TYPE = IPTypes.PRIVATE if IP_TYPE_ENV == "PRIVATE" else IPTypes.PUBLIC
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
 
 # Configure logging
@@ -77,7 +79,7 @@ class WebDocumentProcessor:
                 user=DB_USER,
                 password=DB_PASS,
                 db=DB_NAME,
-                ip_type="PRIVATE",
+                ip_type=IP_TYPE,
             )
             logger.info("✅ Database connection established")
             yield conn

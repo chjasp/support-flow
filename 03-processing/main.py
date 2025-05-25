@@ -14,7 +14,7 @@ import tiktoken
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from google.cloud import storage
-from google.cloud.sql.connector import Connector
+from google.cloud.sql.connector import Connector, IPTypes
 from pydantic import BaseModel
 
 import vertexai
@@ -41,6 +41,8 @@ INSTANCE_CONNECTION_NAME: str = os.environ["CLOUD_SQL_INSTANCE"]
 DB_USER: str = os.environ["CLOUD_SQL_USER"]
 DB_PASS: str = os.environ["CLOUD_SQL_PASSWORD"]
 DB_NAME: str = os.environ["CLOUD_SQL_DB"]
+IP_TYPE_ENV: str = os.environ.get("CLOUD_SQL_IP_TYPE", "PRIVATE").upper()
+IP_TYPE = IPTypes.PRIVATE if IP_TYPE_ENV == "PRIVATE" else IPTypes.PUBLIC
 EMBED_MODEL: str = os.environ["EMBED_MODEL"]
 GEMINI_MODEL: str = os.environ["GEMINI_MODEL"]
 
@@ -109,7 +111,7 @@ def _connect() -> Iterator["pg8000.Connection"]:
         user=DB_USER,
         password=DB_PASS,
         db=DB_NAME,
-        ip_type="PRIVATE",
+        ip_type=IP_TYPE,
     )
     try:
         yield conn
