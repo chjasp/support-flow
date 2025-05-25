@@ -1,23 +1,22 @@
 import logging
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, Request, status
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 from app.config import get_settings, Settings
 
-# Reusable HTTPBearer instance
-oauth2_scheme = HTTPBearer()
 
 async def verify_token(
-    token: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
+    request: Request,
     settings: Settings = Depends(get_settings)
 ) -> dict:
     """
-    Verifies the Google ID token provided in the Authorization header.
+    Verifies the Google ID token provided by the frontend. The user token is
+    expected in the ``X-User-Authorization`` header and falls back to the
+    standard ``Authorization`` header.
 
     Args:
-        token: The bearer token credential.
+        request: The incoming HTTP request.
         settings: Application settings containing the audience client ID.
 
     Returns:
@@ -27,14 +26,24 @@ async def verify_token(
         HTTPException: 401 if token is invalid, expired, or has wrong audience.
                        403 if Authorization header is missing or malformed.
     """
-    if token is None:
-        logging.warning("Authorization header missing")
+    # Look for the user token in the custom header first and then fall back to
+    # the standard Authorization header.
+    auth_header = request.headers.get("x-user-authorization") or request.headers.get("authorization")
+
+    if not auth_header:
+        logging.warning("User authorization header missing")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authenticated: Authorization header missing",
         )
 
-    credentials = token.credentials # This is the actual token string
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authorization header format",
+        )
+
+    credentials = auth_header.split(" ", 1)[1]
 
     try:
         # Verify the token against Google's public keys
