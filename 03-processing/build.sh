@@ -5,7 +5,7 @@ PROJECT_ID="main-dev-431619"
 REGION="europe-west3"
 REPO_NAME="ingester"
 IMAGE_TAG="dev"
-TFVARS_FILE="../04-infra/dev.tfvars"
+TFVARS_FILE="../05-infra/dev.tfvars"
 # --- End Configuration ---
 
 # Construct the full image name

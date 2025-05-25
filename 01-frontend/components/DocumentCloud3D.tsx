@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { useSession } from 'next-auth/react';
+
 // Simple Badge component
 const Badge = ({ 
   children, 
@@ -34,7 +36,7 @@ const Badge = ({
 interface Document {
   id: string;
   name: string;
-  type: "Document" | "Pasted Text";
+  type: "Document" | "Pasted Text" | "Web Page";
   fileType?: string;
   dateAdded: string;
   status: "Uploading" | "Processing" | "Ready" | "Error" | "Unknown";
@@ -46,7 +48,7 @@ interface Document {
 interface Document3D {
   id: string;
   name: string;
-  type: 'Document' | 'Pasted Text';
+  type: 'Document' | 'Pasted Text' | 'Web Page';
   fileType?: string;
   position: [number, number, number];
   color: string;
@@ -54,6 +56,8 @@ interface Document3D {
   content?: string;
   dateAdded: string;
   status: 'Ready' | 'Processing' | 'Error';
+  url?: string; // For web pages
+  chunkCount?: number;
 }
 
 // Agent interface for autonomous agents
@@ -298,6 +302,79 @@ function Scene({
   );
 }
 
+// Hook to fetch 3D document data
+function use3DDocuments() {
+  const { data: session } = useSession();
+  const [documents3D, setDocuments3D] = useState<Document3D[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchDocuments3D = async () => {
+    if (!session?.idToken) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/web/documents-3d', {
+        headers: {
+          'Authorization': `Bearer ${session.idToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch 3D documents: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      // Transform backend data to frontend format
+      const transformed = data.map((doc: any) => ({
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        fileType: doc.fileType,
+        position: doc.position as [number, number, number],
+        color: getDocumentColorByType(doc.fileType || doc.type),
+        size: Math.max(0.2, Math.min(0.8, (doc.chunkCount || 1) / 50)), // Size based on chunk count
+        dateAdded: doc.dateAdded,
+        status: doc.status,
+        url: doc.url,
+        chunkCount: doc.chunkCount
+      }));
+
+      setDocuments3D(transformed);
+    } catch (err) {
+      console.error('Error fetching 3D documents:', err);
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDocuments3D();
+  }, [session?.idToken]);
+
+  return { documents3D, loading, error, refetch: fetchDocuments3D };
+}
+
+// Helper function to get colors by document type
+function getDocumentColorByType(type: string): string {
+  const colors = {
+    'PDF': '#e74c3c',
+    'DOCX': '#3498db', 
+    'TXT': '#2ecc71',
+    'WEB': '#f39c12',
+    'Pasted Text': '#9b59b6',
+    'Web Page': '#f39c12',
+    'Document': '#8e44ad',
+    'default': '#95a5a6'
+  };
+  return colors[type as keyof typeof colors] || colors.default;
+}
+
 // Main DocumentCloud3D component
 export default function DocumentCloud3D({ 
   documents = [],
@@ -313,69 +390,70 @@ export default function DocumentCloud3D({
   const [hoveredDocument, setHoveredDocument] = useState<Document3D | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
+  
+  // Fetch real 3D document data
+  const { documents3D: realDocuments3D, loading, error } = use3DDocuments();
 
   // Generate document colors based on type/category
   const getDocumentColor = (doc: Document): string => {
-    const colors = {
-      'PDF': '#e74c3c',
-      'DOCX': '#3498db', 
-      'TXT': '#2ecc71',
-      'Pasted Text': '#f39c12',
-      'default': '#9b59b6'
-    };
-    return colors[doc.fileType as keyof typeof colors] || colors.default;
+    return getDocumentColorByType(doc.fileType || doc.type);
   };
 
-  // Get available file types for filtering
-  const availableFileTypes = useMemo(() => {
-    const types = new Set<string>();
-    documents.forEach(doc => {
-      types.add(doc.fileType || doc.type);
-    });
-    return Array.from(types);
-  }, [documents]);
-
-  // Convert documents to 3D format with semantic positioning
+  // Use real 3D data if available, otherwise fall back to converted documents or demo data
   const documents3D = useMemo(() => {
-    if (!documents || documents.length === 0) {
-      // Generate sample data for demonstration
-      return Array.from({ length: 20 }, (_, index) => ({
-        id: `demo-${index}`,
-        name: `Document ${index + 1}`,
-        type: 'Document' as const,
-        fileType: ['PDF', 'DOCX', 'TXT'][index % 3],
+    // If we have real 3D data, use it
+    if (realDocuments3D.length > 0) {
+      return realDocuments3D;
+    }
+
+    // Otherwise, convert regular documents if available
+    if (documents && documents.length > 0) {
+      return documents.map((doc) => ({
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        fileType: doc.fileType,
         position: [
+          // Random positioning for documents without 3D coordinates
           (Math.random() - 0.5) * 15,
           (Math.random() - 0.5) * 10,
           (Math.random() - 0.5) * 15
         ] as [number, number, number],
-        color: ['#e74c3c', '#3498db', '#2ecc71'][index % 3],
-        size: 0.3 + Math.random() * 0.4,
-        dateAdded: new Date().toISOString(),
-        status: 'Ready' as const
+        color: getDocumentColor(doc),
+        size: 0.2 + Math.random() * 0.3,
+        dateAdded: doc.dateAdded,
+        status: (doc.status === 'Ready' || doc.status === 'Processing' || doc.status === 'Error') 
+          ? doc.status 
+          : 'Ready' as const
       }));
     }
 
-    return documents.map((doc) => ({
-      id: doc.id,
-      name: doc.name,
-      type: doc.type,
-      fileType: doc.fileType,
+    // Generate demo data if no documents available
+    return Array.from({ length: 20 }, (_, index) => ({
+      id: `demo-${index}`,
+      name: `Document ${index + 1}`,
+      type: 'Document' as const,
+      fileType: ['PDF', 'DOCX', 'TXT'][index % 3],
       position: [
-        // Semantic clustering simulation - in real implementation, 
-        // this would be based on document embeddings
         (Math.random() - 0.5) * 15,
         (Math.random() - 0.5) * 10,
         (Math.random() - 0.5) * 15
       ] as [number, number, number],
-      color: getDocumentColor(doc),
-      size: 0.2 + Math.random() * 0.3,
-      dateAdded: doc.dateAdded,
-      status: (doc.status === 'Ready' || doc.status === 'Processing' || doc.status === 'Error') 
-        ? doc.status 
-        : 'Ready' as const
+      color: ['#e74c3c', '#3498db', '#2ecc71'][index % 3],
+      size: 0.3 + Math.random() * 0.4,
+      dateAdded: new Date().toISOString(),
+      status: 'Ready' as const
     }));
-  }, [documents]);
+  }, [realDocuments3D, documents]);
+
+  // Get available file types for filtering
+  const availableFileTypes = useMemo(() => {
+    const types = new Set<string>();
+    documents3D.forEach(doc => {
+      types.add(doc.fileType || doc.type);
+    });
+    return Array.from(types);
+  }, [documents3D]);
 
   const handleDocumentClick = (document: Document3D) => {
     console.log('Document clicked:', document);
@@ -427,6 +505,20 @@ export default function DocumentCloud3D({
         />
       </Canvas>
 
+      {/* Loading indicator */}
+      {loading && (
+        <div className="absolute top-4 right-4 bg-black/80 text-white p-2 rounded">
+          Loading 3D data...
+        </div>
+      )}
+
+      {/* Error indicator */}
+      {error && (
+        <div className="absolute top-4 right-4 bg-red-500/80 text-white p-2 rounded max-w-xs">
+          Error: {error}
+        </div>
+      )}
+
       {/* Hover information overlay */}
       {hoveredDocument && (
         <div className="absolute top-4 left-4 bg-black/80 text-white p-4 rounded-lg max-w-xs">
@@ -440,10 +532,30 @@ export default function DocumentCloud3D({
           <p className="text-xs text-gray-300">
             Added: {new Date(hoveredDocument.dateAdded).toLocaleDateString()}
           </p>
+          {hoveredDocument.chunkCount && (
+            <p className="text-xs text-gray-300">
+              Chunks: {hoveredDocument.chunkCount}
+            </p>
+          )}
+          {hoveredDocument.url && (
+            <p className="text-xs text-blue-300 truncate">
+              URL: {hoveredDocument.url}
+            </p>
+          )}
         </div>
       )}
 
-
+      {/* Document count and controls */}
+      <div className="absolute bottom-4 left-4 bg-black/80 text-white p-3 rounded-lg">
+        <p className="text-sm">
+          Showing {visibleCount} of {documents3D.length} documents
+        </p>
+        {realDocuments3D.length > 0 && (
+          <p className="text-xs text-green-300">
+            Using real 3D coordinates
+          </p>
+        )}
+      </div>
     </div>
   );
 } 

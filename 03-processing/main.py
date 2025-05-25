@@ -21,7 +21,11 @@ import vertexai
 import google.genai as genai
 from google.genai import types as genai_types
 from vertexai.language_models import TextEmbeddingModel
+from vertexai.generative_models import ToolConfig
 from dotenv import load_dotenv
+
+# Import the new scraper
+from scraper import WebDocumentProcessor
 
 load_dotenv()
 
@@ -82,7 +86,10 @@ GEN_CONFIG = genai_types.GenerateContentConfig(
     # response_modalities=["TEXT"], # Optional: Specify modality if needed, often inferred
     temperature=0,
     top_p=0.1,
-    max_output_tokens=65535 # Adjusted based on common limits, check model specifics if needed
+    max_output_tokens=65535, # Adjusted based on common limits, check model specifics if needed <= model limit
+    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+        disable=True                     # ←‑‑‑ really disables AFC
+    ),
 )
 # -----------------------------------------
 
@@ -260,7 +267,7 @@ def _gemini_extract(pdf_part: genai_types.Part) -> list[dict]:
         raise # Re-raise the exception
 
 
-def _extract_paginated(pdf_path: Path, batch_size: int = 10) -> list[dict]:
+def _extract_paginated(pdf_path: Path, batch_size: int = 5) -> list[dict]:
     """Opens a PDF, extracts content in batches using Gemini, and returns combined JSON."""
     logger.info(f"Starting paginated extraction for {pdf_path} with batch size {batch_size}")
     all_pages_json = []
@@ -678,6 +685,43 @@ async def ingest(request: Request):
 
     return _process_blob(bucket_name=bucket, object_name=name, generation=generation)
 
+
+# Pydantic models for URL processing
+class UrlProcessRequest(BaseModel):
+    urls: List[str]
+    description: str = ""
+
+@app.post("/process-urls")
+async def process_urls(request: UrlProcessRequest):
+    """
+    Process a list of URLs for both RAG and 3D visualization.
+    This endpoint handles web scraping, embedding generation, and 3D coordinate calculation.
+    """
+    logger.info(f"Processing {len(request.urls)} URLs: {request.urls}")
+    
+    try:
+        # Initialize the web document processor
+        processor = WebDocumentProcessor()
+        
+        # Process all URLs
+        result = processor.process_urls(request.urls)
+        
+        logger.info(f"URL processing completed. Processed: {len(result['processed'])}, Failed: {len(result['failed'])}")
+        
+        return {
+            "status": "completed",
+            "processed_count": len(result['processed']),
+            "failed_count": len(result['failed']),
+            "total_chunks": result['total_chunks'],
+            "details": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing URLs: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process URLs: {str(e)}"
+        )
 
 if __name__ == "__main__":
     # Add PyMuPDF license check/acknowledgement if required by your usage context

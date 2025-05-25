@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.utils.logging import configure_logging
-from .routers import documents, chats, mail, gmail
+from .routers import documents, chats, web_processing
 from .routers.chats import query_router as chat_query_router
 
 configure_logging()
@@ -27,8 +27,7 @@ app.add_middleware(
 app.include_router(documents.router)
 app.include_router(chats.router)
 app.include_router(chat_query_router)
-app.include_router(mail.router)
-app.include_router(gmail.router)
+app.include_router(web_processing.router)
 
 @app.get("/health")
 async def health():

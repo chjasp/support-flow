@@ -202,3 +202,131 @@ class CloudSqlRepository:
             # Don't return partial results on error, let the caller handle it
             raise
         return results
+
+    def get_documents_with_3d_coords(self) -> List[Dict[str, Any]]:
+        """Get all documents with their 3D coordinates for visualization."""
+        results = []
+        cur = None
+        
+        sql = """
+            SELECT 
+                d.id as doc_id,
+                d.filename,
+                d.original_gcs,
+                d.created_at,
+                COUNT(c.id) as chunk_count,
+                AVG(c3d.x) as avg_x,
+                AVG(c3d.y) as avg_y,
+                AVG(c3d.z) as avg_z
+            FROM documents d
+            JOIN chunks c ON d.id = c.doc_id
+            JOIN chunks_3d c3d ON c.id = c3d.chunk_id
+            WHERE d.status = 'Ready'
+            GROUP BY d.id, d.filename, d.original_gcs, d.created_at
+            ORDER BY d.created_at DESC
+        """
+        
+        try:
+            with self._get_conn() as conn:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                    colnames = [desc[0] for desc in cur.description]
+                    
+                    for row in rows:
+                        row_dict = dict(zip(colnames, row))
+                        
+                        # Determine document type
+                        filename = row_dict.get("filename", "")
+                        file_type = None
+                        doc_type = "Document"
+                        
+                        if filename and '.' in filename:
+                            file_type = filename.split('.')[-1].upper()
+                        elif row_dict.get("original_gcs", "").startswith("http"):
+                            file_type = "WEB"
+                            doc_type = "Web Page"
+                        
+                        results.append({
+                            "id": str(row_dict["doc_id"]),
+                            "name": filename or "Unknown Document",
+                            "type": doc_type,
+                            "fileType": file_type,
+                            "position": [
+                                float(row_dict["avg_x"]) if row_dict["avg_x"] else 0.0,
+                                float(row_dict["avg_y"]) if row_dict["avg_y"] else 0.0,
+                                float(row_dict["avg_z"]) if row_dict["avg_z"] else 0.0
+                            ],
+                            "dateAdded": row_dict["created_at"].isoformat() if row_dict["created_at"] else "",
+                            "status": "Ready",
+                            "chunkCount": row_dict["chunk_count"],
+                            "url": row_dict.get("original_gcs") if row_dict.get("original_gcs", "").startswith("http") else None
+                        })
+                        
+                    logging.info(f"Retrieved {len(results)} documents with 3D coordinates")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error retrieving 3D documents: {e}", exc_info=True)
+            raise
+            
+        return results
+    
+    def get_document_chunks_3d(self, doc_id: str) -> List[Dict[str, Any]]:
+        """Get all chunks for a specific document with their 3D coordinates."""
+        results = []
+        cur = None
+        
+        try:
+            doc_uuid = uuid.UUID(doc_id)
+        except ValueError:
+            raise ValueError("Invalid document ID format.")
+        
+        sql = """
+            SELECT 
+                c.id as chunk_id,
+                c.chunk_index,
+                c.text,
+                c3d.x,
+                c3d.y,
+                c3d.z,
+                c3d.reduction_method
+            FROM chunks c
+            JOIN chunks_3d c3d ON c.id = c3d.chunk_id
+            WHERE c.doc_id = %s
+            ORDER BY c.chunk_index
+        """
+        
+        try:
+            with self._get_conn() as conn:
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, (doc_uuid,))
+                    rows = cur.fetchall()
+                    colnames = [desc[0] for desc in cur.description]
+                    
+                    for row in rows:
+                        row_dict = dict(zip(colnames, row))
+                        results.append({
+                            "id": str(row_dict["chunk_id"]),
+                            "chunkIndex": row_dict["chunk_index"],
+                            "text": row_dict["text"],
+                            "position": [
+                                float(row_dict["x"]),
+                                float(row_dict["y"]),
+                                float(row_dict["z"])
+                            ],
+                            "reductionMethod": row_dict["reduction_method"]
+                        })
+                        
+                    logging.info(f"Retrieved {len(results)} chunks with 3D coordinates for document {doc_id}")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error retrieving 3D chunks for document {doc_id}: {e}", exc_info=True)
+            raise
+            
+        return results

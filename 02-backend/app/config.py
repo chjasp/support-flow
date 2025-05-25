@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     # --- Add Auth Audience ---
     auth_google_client_id: str # The Client ID used by the Next.js frontend
 
+    # --- Chat Settings ---
+    max_chat_title_length: int = 50
+
+    # --- Processing Service Settings ---
+    processing_service_url: str = "http://localhost:8080"  # Default for local development
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
