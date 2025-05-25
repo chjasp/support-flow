@@ -67,6 +67,23 @@ class WebDocumentProcessor:
             'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/1.0)'
         })
         logger.info("✅ Web session initialized")
+
+    def _fetch_with_js_fallback(self, url: str) -> requests.Response:
+        """Fetch a URL and retry via a prerender service if JS is required."""
+        logger.info(f"📡 Sending HTTP request to {url}")
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+
+        # Some sites (like registry.terraform.io) return a minimal page asking
+        # for JavaScript. If we detect this, retry using r.jina.ai which
+        # prerenders the page server-side.
+        if b"Please enable Javascript" in response.content:
+            logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
+            fallback_url = f"https://r.jina.ai/{url}"
+            response = self.session.get(fallback_url, timeout=30)
+            response.raise_for_status()
+
+        return response
     
     @contextmanager
     def _connect(self):
@@ -96,9 +113,7 @@ class WebDocumentProcessor:
         """Scrape content from a URL."""
         logger.info(f"🌐 Starting to scrape URL: {url}")
         try:
-            logger.info(f"📡 Sending HTTP request to {url}")
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
+            response = self._fetch_with_js_fallback(url)
             logger.info(f"✅ HTTP request successful, status: {response.status_code}")
             
             logger.info("🔍 Parsing HTML content...")
