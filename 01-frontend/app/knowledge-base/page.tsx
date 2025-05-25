@@ -909,6 +909,7 @@ export default function KnowledgeBasePage() {
                       rows={4}
                       required
                       disabled={isProcessingUrls}
+                      className="max-h-32 resize-none overflow-y-auto"
                     />
                   </div>
                   <div>
