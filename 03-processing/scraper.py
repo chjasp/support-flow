@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 import time
 
 import requests
+from requests_html import HTMLSession
 from bs4 import BeautifulSoup
 import tiktoken
 import numpy as np
@@ -66,6 +67,7 @@ class WebDocumentProcessor:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/1.0)'
         })
+        self.js_session = HTMLSession()
         logger.info("✅ Web session initialized")
 
     def _fetch_with_js_fallback(self, url: str, *, retries: int = 3) -> requests.Response:
@@ -99,24 +101,27 @@ class WebDocumentProcessor:
         )
 
         if needs_fallback:
-            logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
-            fallback_url = f"https://r.jina.ai/{url}"
+            logger.info("🔄 Detected JavaScript-only page, using headless browser fallback")
             delay = 1
             response = None
             for attempt in range(1, retries + 1):
-                response = _get(fallback_url)
-                if response:
-                    if b"Please enable Javascript" in response.content:
-                        response = None
-                    else:
-                        break
-                logger.info(f"⏳ Fallback retry {attempt}/{retries} after {delay}s")
-                time.sleep(delay)
-                delay *= 2
+                try:
+                    js_resp = self.js_session.get(url, timeout=30)
+                    js_resp.html.render(timeout=30)
+                    html = js_resp.html.html
+                    response = requests.Response()
+                    response.status_code = js_resp.status_code
+                    response._content = html.encode()
+                    break
+                except Exception as e:
+                    logger.warning(f"⚠️ JS render error for {url}: {e}")
+                    logger.info(f"⏳ Fallback retry {attempt}/{retries} after {delay}s")
+                    time.sleep(delay)
+                    delay *= 2
 
             if response is None:
-                logger.error("❌ Error using JS fallback: exhausted retries")
-                raise ValueError("Failed to fetch page via JS fallback")
+                logger.error("❌ Error using headless browser: exhausted retries")
+                raise ValueError("Failed to fetch page via headless browser")
 
         return response
     
