@@ -1,8 +1,8 @@
 import logging
 import requests
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from typing import List, Dict, Any
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, ValidationError
 
 from app.api.deps import get_cloudsql_repo
 from app.services.cloudsql import CloudSqlRepository
@@ -57,7 +57,7 @@ def call_processing_service(urls: List[str]) -> Dict[str, Any]:
 
 @router.post("/process-urls", response_model=ProcessingResponse)
 async def process_urls(
-    request: UrlProcessRequest,
+    request_obj: Request,
     background_tasks: BackgroundTasks,
     sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo)
 ):
@@ -65,6 +65,54 @@ async def process_urls(
     Process a list of URLs for both RAG and 3D visualization.
     This endpoint triggers background processing and returns immediately.
     """
+    # ===== LOGGING POINT 1: Raw Request Details =====
+    logging.info("===== BACKEND URL PROCESSING DEBUG =====")
+    logging.info(f"Request method: {request_obj.method}")
+    logging.info(f"Request URL: {request_obj.url}")
+    logging.info(f"Request headers: {dict(request_obj.headers)}")
+    
+    # Get the raw body for debugging
+    body = await request_obj.body()
+    logging.info(f"Raw request body: {body}")
+    
+    try:
+        # Parse the body as JSON
+        import json
+        body_json = json.loads(body) if body else {}
+        logging.info(f"Parsed JSON body: {body_json}")
+        
+        # ===== LOGGING POINT 2: Pydantic Validation =====
+        logging.info("Attempting Pydantic validation...")
+        request = UrlProcessRequest(**body_json)
+        logging.info(f"Pydantic validation successful. URLs: {[str(url) for url in request.urls]}")
+        
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON parsing failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid JSON: {str(e)}"
+        )
+    except ValidationError as e:
+        # ===== LOGGING POINT 3: Validation Error Details =====
+        logging.error("===== PYDANTIC VALIDATION ERROR =====")
+        logging.error(f"Validation error: {e}")
+        logging.error(f"Error details: {e.errors()}")
+        for error in e.errors():
+            logging.error(f"Field: {error.get('loc')}, Type: {error.get('type')}, Message: {error.get('msg')}, Input: {error.get('input')}")
+        logging.error("=====================================")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"URL validation failed: {e.errors()}"
+        )
+    except Exception as e:
+        logging.error(f"Unexpected error during request processing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
+    
+    logging.info("================================")
+    
     import uuid
     task_id = str(uuid.uuid4())
     

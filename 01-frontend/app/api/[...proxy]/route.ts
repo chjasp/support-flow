@@ -20,6 +20,13 @@ async function proxyRequest(req: NextRequest) {
   const path = req.nextUrl.pathname.replace(/^\/api\/?/, "");
   const backendUrl = `${apiBaseUrl}/${path}${req.nextUrl.search}`;
 
+  // ===== LOGGING POINT 1: Request Details =====
+  console.log("===== FRONTEND PROXY DEBUG =====");
+  console.log("Original URL path:", req.nextUrl.pathname);
+  console.log("Backend URL:", backendUrl);
+  console.log("Method:", req.method);
+  console.log("Headers:", Object.fromEntries(req.headers.entries()));
+  
   // Obtain an ID-token-enabled client for this backend URL
   const idTokenClient = await auth.getIdTokenClient(backendUrl);
 
@@ -46,27 +53,62 @@ async function proxyRequest(req: NextRequest) {
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   const body = hasBody ? await req.clone().arrayBuffer() : undefined;
 
-  // Make the request to the backend
-  const backendResp = await idTokenClient.request({
-    url: backendUrl,
-    method: req.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
-    headers,
-    data: body,
-  });
+  // ===== LOGGING POINT 2: Request Body =====
+  if (body) {
+    const bodyText = new TextDecoder().decode(body);
+    console.log("Request body:", bodyText);
+    try {
+      const bodyJson = JSON.parse(bodyText);
+      console.log("Parsed request body:", JSON.stringify(bodyJson, null, 2));
+    } catch (e) {
+      console.log("Could not parse body as JSON:", e);
+    }
+  }
+  console.log("Final headers to backend:", headers);
+  console.log("================================");
 
-  // Forward the backend response to the client
-  return new NextResponse(JSON.stringify(backendResp.data), {
-    status: backendResp.status,
-    headers: {
-      'Content-Type': 'application/json',
-      ...Object.fromEntries(
-        Object.entries(backendResp.headers).map(([key, value]) => [
-          key,
-          Array.isArray(value) ? value.join(', ') : String(value)
-        ])
-      )
-    },
-  });
+  try {
+    // Make the request to the backend
+    const backendResp = await idTokenClient.request({
+      url: backendUrl,
+      method: req.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
+      headers,
+      data: body,
+    });
+
+    // Forward the backend response to the client
+    return new NextResponse(JSON.stringify(backendResp.data), {
+      status: backendResp.status,
+      headers: {
+        'Content-Type': 'application/json',
+        ...Object.fromEntries(
+          Object.entries(backendResp.headers).map(([key, value]) => [
+            key,
+            Array.isArray(value) ? value.join(', ') : String(value)
+          ])
+        )
+      },
+    });
+  } catch (error) {
+    // ===== LOGGING POINT 3: Error Details =====
+    console.log("===== BACKEND REQUEST ERROR =====");
+    console.log("Error object:", error);
+    if (error && typeof error === 'object') {
+      console.log("Error keys:", Object.keys(error));
+      if ('response' in error && error.response && typeof error.response === 'object') {
+        console.log("Error response status:", (error.response as any).status);
+        console.log("Error response data:", (error.response as any).data);
+        console.log("Error response headers:", (error.response as any).headers);
+      }
+      if ('config' in error && error.config && typeof error.config === 'object') {
+        console.log("Error config URL:", (error.config as any).url);
+        console.log("Error config method:", (error.config as any).method);
+        console.log("Error config data:", (error.config as any).data);
+      }
+    }
+    console.log("==================================");
+    throw error;
+  }
 }
 
 export async function GET(req: NextRequest) {

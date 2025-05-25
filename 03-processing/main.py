@@ -697,16 +697,27 @@ async def process_urls(request: UrlProcessRequest):
     Process a list of URLs for both RAG and 3D visualization.
     This endpoint handles web scraping, embedding generation, and 3D coordinate calculation.
     """
-    logger.info(f"Processing {len(request.urls)} URLs: {request.urls}")
+    # ===== LOGGING POINT 1: Processing Service Request =====
+    logger.info("===== PROCESSING SERVICE DEBUG =====")
+    logger.info(f"Received request to process {len(request.urls)} URLs")
+    logger.info(f"URLs: {request.urls}")
+    logger.info(f"Description: {request.description}")
+    
+    for i, url in enumerate(request.urls):
+        logger.info(f"URL {i+1}: {url} (type: {type(url)}, length: {len(str(url))})")
     
     try:
         # Initialize the web document processor
         processor = WebDocumentProcessor()
         
+        # ===== LOGGING POINT 2: Before Processing =====
+        logger.info("Initialized WebDocumentProcessor, starting URL processing...")
+        
         # Process all URLs
         result = processor.process_urls(request.urls)
         
         logger.info(f"URL processing completed. Processed: {len(result['processed'])}, Failed: {len(result['failed'])}")
+        logger.info("====================================")
         
         return {
             "status": "completed",
@@ -717,7 +728,12 @@ async def process_urls(request: UrlProcessRequest):
         }
         
     except Exception as e:
+        # ===== LOGGING POINT 3: Processing Error =====
+        logger.error("===== PROCESSING SERVICE ERROR =====")
         logger.error(f"Error processing URLs: {e}", exc_info=True)
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Error args: {e.args}")
+        logger.error("====================================")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process URLs: {str(e)}"
