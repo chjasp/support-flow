@@ -71,17 +71,30 @@ class WebDocumentProcessor:
     def _fetch_with_js_fallback(self, url: str) -> requests.Response:
         """Fetch a URL and retry via a prerender service if JS is required."""
         logger.info(f"📡 Sending HTTP request to {url}")
-        response = self.session.get(url, timeout=30)
-        response.raise_for_status()
 
-        # Some sites (like registry.terraform.io) return a minimal page asking
-        # for JavaScript. If we detect this, retry using r.jina.ai which
-        # prerenders the page server-side.
-        if b"Please enable Javascript" in response.content:
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            logger.warning(f"⚠️ Initial request failed: {e}")
+            response = None
+
+        needs_fallback = (
+            response is None
+            or b"Please enable Javascript" in response.content
+        )
+
+        if needs_fallback:
             logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
             fallback_url = f"https://r.jina.ai/{url}"
-            response = self.session.get(fallback_url, timeout=30)
-            response.raise_for_status()
+            try:
+                response = self.session.get(fallback_url, timeout=30)
+                response.raise_for_status()
+                if b"Please enable Javascript" in response.content:
+                    raise ValueError("Fallback did not return usable content")
+            except Exception as fallback_err:
+                logger.error(f"❌ Error using JS fallback: {fallback_err}")
+                raise
 
         return response
     
@@ -128,11 +141,13 @@ class WebDocumentProcessor:
             # Try to find main content areas
             logger.info("🎯 Looking for main content area...")
             main_content = (
-                soup.find('main') or 
-                soup.find('article') or 
+                soup.find('main') or
+                soup.find('article') or
                 soup.find('div', class_=lambda x: x and 'content' in x.lower()) or
                 soup.find('div', class_=lambda x: x and 'main' in x.lower()) or
-                soup.body
+                soup.find('div', id=lambda x: x and 'content' in x.lower()) or
+                soup.body or
+                soup
             )
             
             if main_content:
