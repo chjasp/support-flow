@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     max_context_chunks: int = 5
     cors_origins: List[str] = ["http://localhost:3000", "https://YOUR_FRONTEND_CLOUD_RUN_URL"]
     google_service_account_json: Optional[str] = None
-    gmail_impersonate_email: Optional[str] = None
 
     # --- Cloud SQL Settings ---
     cloud_sql_instance: str # e.g., project:region:instance
