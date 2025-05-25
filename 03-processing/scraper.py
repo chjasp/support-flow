@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import uuid
@@ -8,8 +7,6 @@ from urllib.parse import urljoin, urlparse
 import time
 
 import requests
-from requests_html import HTMLSession, AsyncHTMLSession
-import threading
 from bs4 import BeautifulSoup
 import tiktoken
 import numpy as np
@@ -68,55 +65,11 @@ class WebDocumentProcessor:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/1.0)'
         })
-        self.js_session = HTMLSession()
-        # Separate async session for environments with a running event loop
-        self.async_js_session = AsyncHTMLSession()
         logger.info("✅ Web session initialized")
 
-    def _is_event_loop_running(self) -> bool:
-        """Check if an asyncio event loop is currently running."""
-        try:
-            loop = asyncio.get_running_loop()
-            return loop.is_running()
-        except RuntimeError:
-            return False
-
-    def _render_js_page(self, url: str) -> requests.Response:
-        """Render a JavaScript-heavy page using the appropriate session."""
-
-        if not self._is_event_loop_running():
-            js_resp = self.js_session.get(url, timeout=30)
-            js_resp.html.render(timeout=30)
-        else:
-            result: Dict[str, Any] = {}
-
-            def _thread_func() -> None:
-                async def _fetch() -> None:
-                    # Instantiate the async session inside the thread so it
-                    # binds to the correct event loop
-                    async_session = AsyncHTMLSession()
-                    resp = await async_session.get(url, timeout=30)
-                    await resp.html.arender(timeout=30)
-                    result['resp'] = resp
-
-                asyncio.run(_fetch())
-
-            thread = threading.Thread(target=_thread_func)
-            thread.start()
-            thread.join()
-            js_resp = result['resp']
-
-        html = js_resp.html.html
-        response = requests.Response()
-        response.status_code = js_resp.status_code
-        response._content = html.encode()
-        return response
-
-    def _fetch_with_js_fallback(self, url: str, *, retries: int = 3) -> requests.Response:
-        """Fetch a URL and retry via a prerender service if JS is required."""
-        logger.info(f"📡 Sending HTTP request to {url}")
-
-        def _get(target: str) -> Optional[requests.Response]:
+    def _retry_get(self, target: str, *, retries: int = 5, delay: int = 2) -> Optional[requests.Response]:
+        """Helper to GET a URL with exponential backoff."""
+        for attempt in range(1, retries + 1):
             try:
                 resp = self.session.get(target, timeout=30)
                 if resp.status_code == 429 or resp.status_code >= 500:
@@ -124,42 +77,30 @@ class WebDocumentProcessor:
                 resp.raise_for_status()
                 return resp
             except Exception as e:
-                logger.warning(f"⚠️ Request error for {target}: {e}")
-                return None
-
-        delay = 1
-        response = None
-        for attempt in range(1, retries + 1):
-            response = _get(url)
-            if response:
-                break
-            logger.info(f"⏳ Retry {attempt}/{retries} after {delay}s")
-            time.sleep(delay)
-            delay *= 2
-
-        needs_fallback = (
-            response is None
-            or b"Please enable Javascript" in response.content
-        )
-
-        if needs_fallback:
-            logger.info("🔄 Detected JavaScript-only page, using headless browser fallback")
-            delay = 1
-            response = None
-
-            for attempt in range(1, retries + 1):
-                try:
-                    response = self._render_js_page(url)
-                    break
-                except Exception as e:
-                    logger.warning(f"⚠️ JS render error for {url} (attempt {attempt}): {e}")
-                    logger.info(f"⏳ Fallback retry {attempt}/{retries} after {delay}s")
+                logger.warning(
+                    f"⚠️ Request error for {target} (attempt {attempt}): {e}"
+                )
+                if attempt < retries:
+                    logger.info(f"⏳ Retry after {delay}s")
                     time.sleep(delay)
                     delay *= 2
+        return None
 
-            if response is None:
-                logger.error("❌ Error using headless browser: exhausted retries")
-                raise ValueError("Failed to fetch page via headless browser")
+    def _fetch_with_js_fallback(self, url: str, *, retries: int = 5) -> requests.Response:
+        """Fetch a URL and retry via r.jina.ai if JS is required."""
+        logger.info(f"📡 Sending HTTP request to {url}")
+
+        response = self._retry_get(url, retries=retries)
+        needs_fallback = response is None or b"Please enable Javascript" in response.content
+
+        if needs_fallback:
+            logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
+            fallback_url = f"https://r.jina.ai/{url}"
+            response = self._retry_get(fallback_url, retries=retries)
+
+            if response is None or b"Please enable Javascript" in response.content:
+                logger.error("❌ Error using JS fallback: exhausted retries")
+                raise ValueError("Failed to fetch page via JS fallback")
 
         return response
     
