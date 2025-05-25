@@ -90,12 +90,18 @@ class WebDocumentProcessor:
         else:
             result: Dict[str, Any] = {}
 
-            async def _fetch() -> None:
-                resp = await self.async_js_session.get(url, timeout=30)
-                await resp.html.arender(timeout=30)
-                result['resp'] = resp
+            def _thread_func() -> None:
+                async def _fetch() -> None:
+                    # Instantiate the async session inside the thread so it
+                    # binds to the correct event loop
+                    async_session = AsyncHTMLSession()
+                    resp = await async_session.get(url, timeout=30)
+                    await resp.html.arender(timeout=30)
+                    result['resp'] = resp
 
-            thread = threading.Thread(target=lambda: asyncio.run(_fetch()))
+                asyncio.run(_fetch())
+
+            thread = threading.Thread(target=_thread_func)
             thread.start()
             thread.join()
             js_resp = result['resp']
