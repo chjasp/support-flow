@@ -5,7 +5,62 @@ Simple test script to verify web scraping functionality with one URL.
 
 import os
 import sys
+from unittest.mock import MagicMock
+import types
 from dotenv import load_dotenv
+import re
+
+class DummyNode:
+    def __init__(self, text=""):
+        self.text = text
+    def decompose(self):
+        pass
+    def get_text(self, separator='\n', strip=True):
+        cleaned = re.sub(r'<[^>]+>', '', self.text)
+        return cleaned.strip()
+
+class DummySoup(DummyNode):
+    def __init__(self, html, parser=None):
+        if isinstance(html, bytes):
+            html = html.decode()
+        super().__init__(html)
+        self.html = html
+    def find(self, tag, *args, **kwargs):
+        m = re.search(fr'<{tag}[^>]*>(.*?)</{tag}>', self.html, re.S)
+        if m:
+            return DummyNode(m.group(1))
+        return None
+    def __call__(self, tags):
+        return []
+    @property
+    def body(self):
+        return DummyNode(self.html)
+
+dummy_bs4 = types.ModuleType('bs4')
+dummy_bs4.BeautifulSoup = DummySoup
+sys.modules['bs4'] = dummy_bs4
+dummy_requests = types.ModuleType('requests')
+class DummyResp:
+    def __init__(self):
+        self.status_code = 200
+        self._content = b''
+    @property
+    def content(self):
+        return self._content
+    def raise_for_status(self):
+        pass
+class DummySession:
+    def __init__(self):
+        self.headers = {}
+    def get(self, url, timeout=30):
+        return DummyResp()
+dummy_requests.Response = DummyResp
+dummy_requests.Session = DummySession
+sys.modules['requests'] = dummy_requests
+sys.modules['numpy'] = MagicMock()
+sys.modules['umap'] = MagicMock()
+sys.modules['sklearn'] = MagicMock()
+sys.modules['sklearn.preprocessing'] = MagicMock(StandardScaler=MagicMock())
 from scraper import WebDocumentProcessor
 
 # Load environment variables from .env file
