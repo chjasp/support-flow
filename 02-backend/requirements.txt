@@ -13,3 +13,5 @@ google-auth-oauthlib>=0.7.0
 google-auth-httplib2>=0.1.0
 cloud-sql-python-connector[pg8000]
 google-auth>=2.0.0
+pytest
+pytest-asyncio
