@@ -61,9 +61,14 @@ async def verify_token(
     except ValueError as e:
         # This catches invalid token format, signature, expiry, audience mismatch, etc.
         logging.error(f"Token verification failed: {e}", exc_info=True)
+        message = str(e)
+        if "Token expired" in message:
+            detail = "Token expired. Please sign in again."
+        else:
+            detail = f"Invalid authentication credentials: {message}"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {e}",
+            detail=detail,
             headers={"WWW-Authenticate": "Bearer"},
         )
     except Exception as e:
