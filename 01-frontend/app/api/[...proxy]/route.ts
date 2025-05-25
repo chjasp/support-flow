@@ -52,6 +52,25 @@ async function proxyRequest(req: NextRequest) {
   // Determine if the request has a body
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   const body = hasBody ? await req.clone().arrayBuffer() : undefined;
+  
+  // Convert body to appropriate format for the Google Auth library
+  let requestData: any = undefined;
+  if (body) {
+    const contentType = req.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      // For JSON content, convert ArrayBuffer to string and then parse
+      const bodyText = new TextDecoder().decode(body);
+      try {
+        requestData = JSON.parse(bodyText);
+      } catch (e) {
+        // If JSON parsing fails, send as string
+        requestData = bodyText;
+      }
+    } else {
+      // For non-JSON content, send as ArrayBuffer
+      requestData = body;
+    }
+  }
 
   // ===== LOGGING POINT 2: Request Body =====
   if (body) {
@@ -73,7 +92,7 @@ async function proxyRequest(req: NextRequest) {
       url: backendUrl,
       method: req.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
       headers,
-      data: body,
+      data: requestData,
     });
 
     // Forward the backend response to the client
