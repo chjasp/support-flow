@@ -68,16 +68,30 @@ class WebDocumentProcessor:
         })
         logger.info("✅ Web session initialized")
 
-    def _fetch_with_js_fallback(self, url: str) -> requests.Response:
+    def _fetch_with_js_fallback(self, url: str, *, retries: int = 3) -> requests.Response:
         """Fetch a URL and retry via a prerender service if JS is required."""
         logger.info(f"📡 Sending HTTP request to {url}")
 
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-        except Exception as e:
-            logger.warning(f"⚠️ Initial request failed: {e}")
-            response = None
+        def _get(target: str) -> Optional[requests.Response]:
+            try:
+                resp = self.session.get(target, timeout=30)
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    raise requests.HTTPError(f"{resp.status_code} {resp.reason}")
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                logger.warning(f"⚠️ Request error for {target}: {e}")
+                return None
+
+        delay = 1
+        response = None
+        for attempt in range(1, retries + 1):
+            response = _get(url)
+            if response:
+                break
+            logger.info(f"⏳ Retry {attempt}/{retries} after {delay}s")
+            time.sleep(delay)
+            delay *= 2
 
         needs_fallback = (
             response is None
@@ -87,14 +101,22 @@ class WebDocumentProcessor:
         if needs_fallback:
             logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
             fallback_url = f"https://r.jina.ai/{url}"
-            try:
-                response = self.session.get(fallback_url, timeout=30)
-                response.raise_for_status()
-                if b"Please enable Javascript" in response.content:
-                    raise ValueError("Fallback did not return usable content")
-            except Exception as fallback_err:
-                logger.error(f"❌ Error using JS fallback: {fallback_err}")
-                raise
+            delay = 1
+            response = None
+            for attempt in range(1, retries + 1):
+                response = _get(fallback_url)
+                if response:
+                    if b"Please enable Javascript" in response.content:
+                        response = None
+                    else:
+                        break
+                logger.info(f"⏳ Fallback retry {attempt}/{retries} after {delay}s")
+                time.sleep(delay)
+                delay *= 2
+
+            if response is None:
+                logger.error("❌ Error using JS fallback: exhausted retries")
+                raise ValueError("Failed to fetch page via JS fallback")
 
         return response
     
@@ -226,26 +248,39 @@ class WebDocumentProcessor:
             return dummy_embeddings
             
         all_embeddings = []
-        batch_size = 100  # text-embedding-004 limit
-        total_batches = (len(texts) + batch_size - 1) // batch_size
-        
-        for i in range(0, len(texts), batch_size):
-            batch_num = i // batch_size + 1
-            batch = texts[i:i + batch_size]
-            
-            logger.info(f"🔄 Processing batch {batch_num}/{total_batches} ({len(batch)} texts)")
-            
+        max_tokens = 18000  # keep some headroom below API limit
+        batch: List[str] = []
+        batch_tokens = 0
+        batch_num = 1
+
+        def _process_current(batch_num: int, batch: List[str]):
+            nonlocal all_embeddings
+            if not batch:
+                return
+            token_count = sum(len(tokenizer.encode(t)) for t in batch)
+            logger.info(f"🔄 Processing batch {batch_num} ({len(batch)} texts, {token_count} tokens)")
             try:
                 embeddings = embedding_model.get_embeddings(batch)
                 all_embeddings.extend([emb.values for emb in embeddings])
                 logger.info(f"✅ Successfully processed batch {batch_num}")
-                time.sleep(0.1)  # Rate limiting
+                time.sleep(0.1)
             except Exception as e:
                 logger.error(f"❌ Error getting embeddings for batch {batch_num}: {e}")
-                # Add zero vectors for failed embeddings
                 zero_embeddings = [[0.0] * 768] * len(batch)
                 all_embeddings.extend(zero_embeddings)
                 logger.warning(f"⚠️ Using zero embeddings for failed batch {batch_num}")
+
+        for text in texts:
+            tokens = len(tokenizer.encode(text))
+            if batch_tokens + tokens > max_tokens and batch:
+                _process_current(batch_num, batch)
+                batch_num += 1
+                batch = []
+                batch_tokens = 0
+            batch.append(text)
+            batch_tokens += tokens
+
+        _process_current(batch_num, batch)
         
         logger.info(f"✅ Generated {len(all_embeddings)} embeddings total")
         return all_embeddings
