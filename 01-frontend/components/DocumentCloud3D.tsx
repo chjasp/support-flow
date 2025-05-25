@@ -399,7 +399,7 @@ export default function DocumentCloud3D({
     return getDocumentColorByType(doc.fileType || doc.type);
   };
 
-  // Use real 3D data if available, otherwise fall back to converted documents or demo data
+  // Use real 3D data if available, otherwise fall back to converted documents
   const documents3D = useMemo(() => {
     // If we have real 3D data, use it
     if (realDocuments3D.length > 0) {
@@ -428,22 +428,8 @@ export default function DocumentCloud3D({
       }));
     }
 
-    // Generate demo data if no documents available
-    return Array.from({ length: 20 }, (_, index) => ({
-      id: `demo-${index}`,
-      name: `Document ${index + 1}`,
-      type: 'Document' as const,
-      fileType: ['PDF', 'DOCX', 'TXT'][index % 3],
-      position: [
-        (Math.random() - 0.5) * 15,
-        (Math.random() - 0.5) * 10,
-        (Math.random() - 0.5) * 15
-      ] as [number, number, number],
-      color: ['#e74c3c', '#3498db', '#2ecc71'][index % 3],
-      size: 0.3 + Math.random() * 0.4,
-      dateAdded: new Date().toISOString(),
-      status: 'Ready' as const
-    }));
+    // No data available
+    return [];
   }, [realDocuments3D, documents]);
 
   // Get available file types for filtering
