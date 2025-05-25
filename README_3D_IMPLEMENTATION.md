@@ -47,6 +47,8 @@ CLOUD_SQL_INSTANCE=your-instance-connection-name
 CLOUD_SQL_USER=your-db-user
 CLOUD_SQL_PASSWORD=your-db-password
 CLOUD_SQL_DB=docs
+# When running locally use the instance's public IP
+CLOUD_SQL_IP_TYPE=PUBLIC
 EMBED_MODEL=text-embedding-004
 PROCESSING_SERVICE_URL=http://localhost:8080  # For backend config
 ```
