@@ -1,7 +1,7 @@
 import logging
 import requests
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, HttpUrl, ValidationError
 
 from app.api.deps import get_cloudsql_repo
@@ -28,10 +28,17 @@ class ProcessingResponse(BaseModel):
     message: str
 
 class Document3DResponse(BaseModel):
+    """Representation of a document with 3D coordinates for the frontend."""
+
     id: str
     name: str
     type: str
-    chunks: List[Dict[str, Any]]
+    fileType: Optional[str] = None
+    position: List[float]
+    dateAdded: str
+    status: str
+    chunkCount: int
+    url: Optional[str] = None
 
 # In-memory task tracking (in production, use Redis or database)
 processing_tasks = {}
