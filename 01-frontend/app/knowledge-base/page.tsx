@@ -28,6 +28,7 @@ import {
   RefreshCw,
 } from "lucide-react"; // Example icons
 import { useSession } from "next-auth/react"; // Import useSession
+import { authFetch } from "@/lib/authFetch";
 
 // Define a type for knowledge items (replace with your actual data structure)
 type KnowledgeItem = {
@@ -87,17 +88,9 @@ export default function KnowledgeBasePage() {
     }
 
     try {
-      const response = await fetch(GET_ITEMS_ENDPOINT, {
-        headers: {
-          Authorization: `Bearer ${session.idToken}`,
-        },
-      });
+      const response = await authFetch(session, GET_ITEMS_ENDPOINT);
       if (!response.ok) {
-         if (response.status === 401 || response.status === 403) {
-            console.error("Unauthorized. Token might be invalid or expired.");
-            // Optionally trigger sign out or refresh
-            // signOut();
-         } else {
+         if (response.status !== 401 && response.status !== 403) {
             throw new Error(`Failed to fetch items: ${response.statusText}`);
          }
          // If unauthorized, clear items and stop
@@ -484,11 +477,8 @@ export default function KnowledgeBasePage() {
           return;
         }
 
-        const response = await fetch(`${DELETE_ITEM_ENDPOINT}/${id}`, { // Append ID to URL
+        const response = await authFetch(session, `${DELETE_ITEM_ENDPOINT}/${id}`, {
           method: "DELETE",
-          headers: {
-              'Authorization': `Bearer ${session.idToken}`,
-          }
         });
 
         // Handle Backend Response

@@ -1,6 +1,7 @@
 "use client";
 
 import { useSession, signIn } from "next-auth/react";
+import { authFetch } from "@/lib/authFetch";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
@@ -102,17 +103,15 @@ export default function HomePage() {
 
     setIsLoading(true);
     try {
-      const response = await fetch('/api/documents', {
-        headers: {
-          Authorization: `Bearer ${session.idToken}`,
-        },
-      });
+      const response = await authFetch(session, '/api/documents');
 
       if (response.ok) {
         const data: Document[] = await response.json();
-        setDocuments(data.filter(doc => doc.status === 'Ready')); // Only show ready documents
+        setDocuments(data.filter(doc => doc.status === 'Ready'));
       } else {
-        console.error('Failed to fetch documents:', response.statusText);
+        if (response.status !== 401 && response.status !== 403) {
+          console.error('Failed to fetch documents:', response.statusText);
+        }
       }
     } catch (error) {
       console.error('Error fetching documents:', error);
