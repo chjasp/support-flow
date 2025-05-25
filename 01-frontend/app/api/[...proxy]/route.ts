@@ -23,16 +23,35 @@ async function proxyRequest(req: NextRequest) {
   // Obtain an ID-token-enabled client for this backend URL
   const idTokenClient = await auth.getIdTokenClient(backendUrl);
 
-  // Forward headers the backend cares about
+  // Forward incoming headers to the backend, preserving content-type and others
+  // the API depends on. We explicitly forward the authorization header if present.
   const headers: Record<string, string> = {};
+  req.headers.forEach((value, key) => {
+    const lower = key.toLowerCase();
+    if (lower === "host") return; // not valid for backend
+    if (lower === "content-length") return; // will be recalculated
+    headers[key] = value;
+  });
+
+  // Ensure we forward the user's ID token if provided
   const userAuth = req.headers.get("authorization");
   if (userAuth) {
-    headers["authorization"] = userAuth; // user's Google ID token
+    headers["authorization"] = userAuth;
   }
 
   // Determine if the request has a body
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
-  const body = hasBody ? await req.clone().arrayBuffer() : undefined;
+  let body: any = undefined;
+  if (hasBody) {
+    const contentType = req.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      // Preserve JSON exactly as received
+      body = await req.text();
+    } else {
+      const arrayBuffer = await req.arrayBuffer();
+      body = Buffer.from(arrayBuffer);
+    }
+  }
 
   // Make the request to the backend
   const backendResp = await idTokenClient.request({
