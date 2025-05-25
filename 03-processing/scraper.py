@@ -72,6 +72,7 @@ class WebDocumentProcessor:
     def _connect(self):
         """Database connection context manager."""
         logger.info(f"🔌 Connecting to database: {INSTANCE_CONNECTION_NAME}")
+        conn = None
         try:
             conn = connector.connect(
                 INSTANCE_CONNECTION_NAME,
@@ -79,7 +80,7 @@ class WebDocumentProcessor:
                 user=DB_USER,
                 password=DB_PASS,
                 db=DB_NAME,
-                ip_type=IP_TYPE,
+                ip_type=IPTypes.PUBLIC,  # Use PUBLIC IP like the backend service
             )
             logger.info("✅ Database connection established")
             yield conn
@@ -87,8 +88,9 @@ class WebDocumentProcessor:
             logger.error(f"❌ Database connection failed: {e}")
             raise
         finally:
-            conn.close()
-            logger.info("🔌 Database connection closed")
+            if conn:  # Only close if connection was established
+                conn.close()
+                logger.info("🔌 Database connection closed")
     
     def scrape_url(self, url: str) -> Dict[str, Any]:
         """Scrape content from a URL."""
@@ -300,7 +302,9 @@ class WebDocumentProcessor:
         logger.info(f"📊 Chunks: {len(chunks)}, Embeddings: {len(embeddings)}, Coordinates: {len(coords_3d)}")
         
         with self._connect() as conn:
-            with conn.cursor() as cur:
+            cur = None
+            try:
+                cur = conn.cursor()
                 # Insert document
                 logger.info("💾 Inserting document record...")
                 cur.execute("""
@@ -326,12 +330,15 @@ class WebDocumentProcessor:
                     
                     # Insert 3D coordinates
                     cur.execute("""
-                        INSERT INTO chunks_3d (chunk_id, x, y, z, reduction_method)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (chunk_id, x, y, z, 'umap'))
+                        INSERT INTO chunks_3d (chunk_id, x, y, z)
+                        VALUES (%s, %s, %s, %s)
+                    """, (chunk_id, x, y, z))
                 
                 conn.commit()
                 logger.info(f"✅ Successfully stored document {doc_id} with {len(chunks)} chunks")
+            finally:
+                if cur:
+                    cur.close()
         
         return doc_id
     

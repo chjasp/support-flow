@@ -35,8 +35,7 @@ CREATE TABLE IF NOT EXISTS chunks_3d (
     y REAL NOT NULL,
     z REAL NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    reduction_method VARCHAR(20) DEFAULT 'umap' CHECK (reduction_method IN ('umap', 'tsne', 'pca')),
-    UNIQUE (chunk_id, reduction_method)
+    UNIQUE (chunk_id)
 );
 
 -- Create index for faster 3D coordinate queries

@@ -291,8 +291,7 @@ class CloudSqlRepository:
                 c.text,
                 c3d.x,
                 c3d.y,
-                c3d.z,
-                c3d.reduction_method
+                c3d.z
             FROM chunks c
             JOIN chunks_3d c3d ON c.id = c3d.chunk_id
             WHERE c.doc_id = %s
@@ -317,8 +316,7 @@ class CloudSqlRepository:
                                 float(row_dict["x"]),
                                 float(row_dict["y"]),
                                 float(row_dict["z"])
-                            ],
-                            "reductionMethod": row_dict["reduction_method"]
+                            ]
                         })
                         
                     logging.info(f"Retrieved {len(results)} chunks with 3D coordinates for document {doc_id}")

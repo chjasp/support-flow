@@ -88,8 +88,8 @@ def store_coords(chunk_ids: List[int], coords: List[Tuple[float, float, float]])
         cur.execute("DELETE FROM chunks_3d")
         cur.executemany(
             """
-            INSERT INTO chunks_3d (chunk_id, x, y, z, reduction_method)
-            VALUES (%s, %s, %s, %s, 'umap')
+            INSERT INTO chunks_3d (chunk_id, x, y, z)
+            VALUES (%s, %s, %s, %s)
             """,
             [
                 (cid, x, y, z)
