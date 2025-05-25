@@ -123,6 +123,18 @@ curl -X POST "http://localhost:8080/process-urls" \
 - `POST /process-urls`: Direct URL processing
 - `POST /`: Original GCS blob processing (unchanged)
 
+### Global Coordinate Recompute
+
+To keep the 3D layout stable across all documents, run the mapping script after
+new files or URLs are ingested:
+
+```bash
+python 04-mapping/main.py
+```
+
+This script loads every embedding from the database, performs UMAP reduction in
+one batch, and updates the `chunks_3d` table with fresh coordinates.
+
 ## Technical Details
 
 ### Dimensionality Reduction
