@@ -2,12 +2,18 @@ import logging
 import os
 import uuid
 from contextlib import contextmanager
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse
 import time
 
 import requests
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import tiktoken
 import numpy as np
 from sklearn.preprocessing import StandardScaler
@@ -31,6 +37,8 @@ DB_NAME = os.environ.get("CLOUD_SQL_DB", "test-db")
 IP_TYPE_ENV = os.environ.get("CLOUD_SQL_IP_TYPE", "PRIVATE").upper()
 IP_TYPE = IPTypes.PRIVATE if IP_TYPE_ENV == "PRIVATE" else IPTypes.PUBLIC
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
+USE_SELENIUM = os.environ.get("USE_SELENIUM", "false").lower() == "true"
+GECKODRIVER_PATH = os.environ.get("GECKODRIVER_PATH")
 
 # Configure logging
 logging.basicConfig(
@@ -58,14 +66,40 @@ connector = Connector()
 
 class WebDocumentProcessor:
     """Processes web documents for both RAG and 3D visualization."""
-    
-    def __init__(self):
+
+    def __init__(self, use_selenium: bool = USE_SELENIUM):
         logger.info("🌐 Initializing web session...")
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/1.0)'
         })
         logger.info("✅ Web session initialized")
+
+        self.use_selenium = use_selenium
+        self.driver = None
+        if self.use_selenium:
+            logger.info("🧭 Attempting to start Selenium Firefox driver...")
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--width=1920")
+            options.add_argument("--height=1080")
+            options.set_preference(
+                "general.useragent.override",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/109.0",
+            )
+            options.set_preference("dom.webdriver.enabled", False)
+            options.set_preference("useAutomationExtension", False)
+            try:
+                if GECKODRIVER_PATH and os.path.exists(GECKODRIVER_PATH):
+                    service = Service(executable_path=GECKODRIVER_PATH)
+                    self.driver = webdriver.Firefox(service=service, options=options)
+                else:
+                    self.driver = webdriver.Firefox(options=options)
+                logger.info("✅ Selenium Firefox driver initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not initialize Selenium driver: {e}")
+                self.driver = None
+                self.use_selenium = False
 
     def _retry_get(self, target: str, *, retries: int = 5, delay: int = 2) -> Optional[requests.Response]:
         """Helper to GET a URL with exponential backoff."""
@@ -103,6 +137,51 @@ class WebDocumentProcessor:
                 raise ValueError("Failed to fetch page via JS fallback")
 
         return response
+
+    def _parse_html(self, html: Union[bytes, str], url: str) -> Tuple[str, str]:
+        """Parse HTML and extract title and cleaned text."""
+        soup = BeautifulSoup(html, 'html.parser')
+
+        for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
+            element.decompose()
+
+        main_content = (
+            soup.find('main') or
+            soup.find('article') or
+            soup.find('div', class_=lambda x: x and 'content' in x.lower()) or
+            soup.find('div', class_=lambda x: x and 'main' in x.lower()) or
+            soup.find('div', id=lambda x: x and 'content' in x.lower()) or
+            soup.body or
+            soup
+        )
+
+        if not main_content:
+            raise ValueError("No main content found")
+
+        title = soup.find('h1') or soup.find('title')
+        title_text = title.get_text().strip() if title else urlparse(url).path
+
+        text_content = main_content.get_text(separator='\n', strip=True)
+        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+        clean_text = '\n'.join(lines)
+
+        return title_text, clean_text
+
+    def _scrape_with_selenium(self, url: str) -> Dict[str, Any]:
+        """Scrape a URL using Selenium and BeautifulSoup."""
+        assert self.driver is not None
+        self.driver.get(url)
+        wait = WebDriverWait(self.driver, 30)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        page_html = self.driver.page_source
+        title_text, clean_text = self._parse_html(page_html, url)
+        return {
+            'url': url,
+            'title': title_text,
+            'content': clean_text,
+            'length': len(clean_text),
+            'status': 'success'
+        }
     
     @contextmanager
     def _connect(self):
@@ -131,61 +210,24 @@ class WebDocumentProcessor:
     def scrape_url(self, url: str) -> Dict[str, Any]:
         """Scrape content from a URL."""
         logger.info(f"🌐 Starting to scrape URL: {url}")
+
+        if self.use_selenium and self.driver:
+            try:
+                return self._scrape_with_selenium(url)
+            except Exception as e:
+                logger.warning(f"⚠️ Selenium scraping failed for {url}: {e}")
+
         try:
             response = self._fetch_with_js_fallback(url)
-            logger.info(f"✅ HTTP request successful, status: {response.status_code}")
-            
-            logger.info("🔍 Parsing HTML content...")
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Extract meaningful content
-            logger.info("🧹 Cleaning up HTML content...")
-            # Remove script, style, nav, footer, and sidebar elements
-            for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
-                element.decompose()
-            
-            # Try to find main content areas
-            logger.info("🎯 Looking for main content area...")
-            main_content = (
-                soup.find('main') or
-                soup.find('article') or
-                soup.find('div', class_=lambda x: x and 'content' in x.lower()) or
-                soup.find('div', class_=lambda x: x and 'main' in x.lower()) or
-                soup.find('div', id=lambda x: x and 'content' in x.lower()) or
-                soup.body or
-                soup
-            )
-            
-            if main_content:
-                # Extract title
-                logger.info("📄 Extracting title...")
-                title = (
-                    soup.find('h1') or 
-                    soup.find('title')
-                )
-                title_text = title.get_text().strip() if title else urlparse(url).path
-                logger.info(f"📄 Found title: {title_text}")
-                
-                # Extract text content
-                logger.info("📝 Extracting text content...")
-                text_content = main_content.get_text(separator='\n', strip=True)
-                
-                # Clean up the text
-                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                clean_text = '\n'.join(lines)
-                
-                logger.info(f"✅ Successfully scraped {len(clean_text)} characters from {url}")
-                
-                return {
-                    'url': url,
-                    'title': title_text,
-                    'content': clean_text,
-                    'length': len(clean_text),
-                    'status': 'success'
-                }
-            else:
-                raise ValueError("No main content found")
-                
+            title_text, clean_text = self._parse_html(response.content, url)
+            logger.info(f"✅ Successfully scraped {len(clean_text)} characters from {url}")
+            return {
+                'url': url,
+                'title': title_text,
+                'content': clean_text,
+                'length': len(clean_text),
+                'status': 'success'
+            }
         except Exception as e:
             logger.error(f"❌ Error scraping {url}: {e}")
             return {
@@ -497,8 +539,15 @@ class WebDocumentProcessor:
         logger.info(f"✅ Successfully processed: {len(results['processed'])} URLs")
         logger.info(f"❌ Failed: {len(results['failed'])} URLs")
         logger.info(f"📊 Total chunks stored: {results['total_chunks']}")
-        
+
         return results
+
+    def close(self) -> None:
+        """Close any open resources like the Selenium driver."""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+            logger.info("🛑 Selenium driver closed")
 
 
 def get_google_cloud_docs_urls() -> List[str]:
@@ -560,5 +609,6 @@ if __name__ == "__main__":
     
     results = processor.process_urls(test_urls)
     print(f"Processed: {len(results['processed'])} URLs")
-    print(f"Failed: {len(results['failed'])} URLs") 
-    print(f"Total chunks: {results['total_chunks']}") 
+    print(f"Failed: {len(results['failed'])} URLs")
+    print(f"Total chunks: {results['total_chunks']}")
+    processor.close()
