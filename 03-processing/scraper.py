@@ -37,7 +37,7 @@ DB_NAME = os.environ.get("CLOUD_SQL_DB", "test-db")
 IP_TYPE_ENV = os.environ.get("CLOUD_SQL_IP_TYPE", "PRIVATE").upper()
 IP_TYPE = IPTypes.PRIVATE if IP_TYPE_ENV == "PRIVATE" else IPTypes.PUBLIC
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
-USE_SELENIUM = os.environ.get("USE_SELENIUM", "false").lower() == "true"
+USE_SELENIUM = os.environ.get("USE_SELENIUM", "true").lower() == "true"
 GECKODRIVER_PATH = os.environ.get("GECKODRIVER_PATH")
 
 # Configure logging
@@ -71,41 +71,71 @@ class WebDocumentProcessor:
         logger.info("🌐 Initializing web session...")
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/1.0)'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
         })
         logger.info("✅ Web session initialized")
 
         self.use_selenium = use_selenium
         self.driver = None
+        self.selenium_available = True
+        
         if self.use_selenium:
             logger.info("🧭 Attempting to start Selenium Firefox driver...")
+            
+            # Firefox options configuration
             options = Options()
-            options.add_argument("--headless")
+            options.add_argument("--headless")  # Run in headless mode
             options.add_argument("--width=1920")
             options.add_argument("--height=1080")
+            
+            # Additional options for better compatibility and stealth
             options.set_preference(
                 "general.useragent.override",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/109.0",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/109.0"
             )
             options.set_preference("dom.webdriver.enabled", False)
             options.set_preference("useAutomationExtension", False)
+            
+            # Performance and stability options
+            options.set_preference("browser.cache.disk.enable", False)
+            options.set_preference("browser.cache.memory.enable", False)
+            options.set_preference("browser.cache.offline.enable", False)
+            options.set_preference("network.http.use-cache", False)
+            
             try:
                 if GECKODRIVER_PATH and os.path.exists(GECKODRIVER_PATH):
+                    logger.info(f"🔧 Using GeckoDriver from: {GECKODRIVER_PATH}")
                     service = Service(executable_path=GECKODRIVER_PATH)
                     self.driver = webdriver.Firefox(service=service, options=options)
                 else:
+                    logger.info("🔧 Using GeckoDriver from PATH")
                     self.driver = webdriver.Firefox(options=options)
-                logger.info("✅ Selenium Firefox driver initialized")
+                
+                logger.info("✅ Selenium Firefox driver initialized successfully")
+                
+                # Test the driver with a simple page
+                try:
+                    self.driver.get("data:text/html,<html><body>Test</body></html>")
+                    logger.info("✅ Selenium driver test successful")
+                except Exception as test_e:
+                    logger.warning(f"⚠️ Selenium driver test failed: {test_e}")
+                    
             except Exception as e:
                 logger.warning(f"⚠️ Could not initialize Selenium driver: {e}")
+                logger.info("💡 Tip: Make sure Firefox and geckodriver are installed")
+                logger.info("💡 You can install geckodriver with: brew install geckodriver (macOS)")
                 self.driver = None
                 self.use_selenium = False
+                self.selenium_available = False
 
     def _retry_get(self, target: str, *, retries: int = 5, delay: int = 2) -> Optional[requests.Response]:
         """Helper to GET a URL with exponential backoff."""
         for attempt in range(1, retries + 1):
             try:
-                resp = self.session.get(target, timeout=30)
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+                }
+                resp = self.session.get(target, headers=headers, timeout=30)
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise requests.HTTPError(f"{resp.status_code} {resp.reason}")
                 resp.raise_for_status()
@@ -120,47 +150,206 @@ class WebDocumentProcessor:
                     delay *= 2
         return None
 
-    def _fetch_with_js_fallback(self, url: str, *, retries: int = 5) -> requests.Response:
-        """Fetch a URL and retry via r.jina.ai if JS is required."""
-        logger.info(f"📡 Sending HTTP request to {url}")
-
-        response = self._retry_get(url, retries=retries)
-        needs_fallback = response is None or b"Please enable Javascript" in response.content
-
-        if needs_fallback:
-            logger.info("🔄 Detected JavaScript-only page, using r.jina.ai fallback")
-            fallback_url = f"https://r.jina.ai/{url}"
-            response = self._retry_get(fallback_url, retries=retries)
-
-            if response is None or b"Please enable Javascript" in response.content:
-                logger.error("❌ Error using JS fallback: exhausted retries")
-                raise ValueError("Failed to fetch page via JS fallback")
-
-        return response
+    def _scrape_with_requests(self, url: str) -> Dict[str, Any]:
+        """Fallback method using requests + BeautifulSoup with smart content detection."""
+        try:
+            logger.info(f"📡 Trying requests method for {url}")
+            response = self._retry_get(url)
+            
+            if response is None:
+                raise ValueError("Failed to fetch page with requests")
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove unwanted elements
+            for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
+                element.decompose()
+            
+            # Try multiple content selectors in order of preference
+            content_selectors = [
+                # Specific content areas
+                ('main', {}),
+                ('article', {}),
+                ('[role="main"]', {}),
+                ('.content', {}),
+                ('.main-content', {}),
+                ('.page-content', {}),
+                ('.post-content', {}),
+                ('.entry-content', {}),
+                ('#content', {}),
+                ('#main', {}),
+                # Documentation-specific selectors
+                ('.markdown-body', {}),
+                ('.provider-docs-content', {}),
+                ('.documentation', {}),
+                ('.docs-content', {}),
+                # Generic fallbacks
+                ('div[class*="content"]', {}),
+                ('div[class*="main"]', {}),
+                ('body', {}),
+            ]
+            
+            main_content = None
+            used_selector = None
+            
+            for selector, attrs in content_selectors:
+                if selector.startswith('.'):
+                    # Class selector
+                    class_name = selector[1:]
+                    main_content = soup.find(attrs={'class': class_name}) if not attrs else soup.find(attrs=attrs)
+                elif selector.startswith('#'):
+                    # ID selector
+                    id_name = selector[1:]
+                    main_content = soup.find(attrs={'id': id_name})
+                elif selector.startswith('[') and selector.endswith(']'):
+                    # Attribute selector
+                    if 'role=' in selector:
+                        main_content = soup.find(attrs={'role': 'main'})
+                    elif 'class*=' in selector:
+                        # Partial class match
+                        class_part = selector.split('class*="')[1].split('"')[0]
+                        main_content = soup.find('div', class_=lambda x: x and class_part in ' '.join(x) if isinstance(x, list) else class_part in x if x else False)
+                else:
+                    # Tag selector
+                    main_content = soup.find(selector, attrs) if attrs else soup.find(selector)
+                
+                if main_content:
+                    used_selector = selector
+                    logger.info(f"✅ Found content using selector: {selector}")
+                    break
+            
+            if not main_content:
+                logger.warning("⚠️ No specific content area found, using body")
+                main_content = soup.body or soup
+                used_selector = "body (fallback)"
+            
+            # Extract title
+            title = soup.find('h1') or soup.find('title')
+            title_text = title.get_text().strip() if title else urlparse(url).path.split('/')[-1]
+            
+            # Extract and clean text content
+            text_content = main_content.get_text(separator='\n', strip=True)
+            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+            clean_text = '\n'.join(lines)
+            
+            # Check if the content indicates JavaScript is required
+            js_indicators = [
+                "please enable javascript",
+                "javascript is required",
+                "javascript must be enabled",
+                "enable javascript",
+                "javascript disabled",
+                "requires javascript",
+                "javascript is disabled"
+            ]
+            
+            content_lower = clean_text.lower()
+            needs_js = any(indicator in content_lower for indicator in js_indicators)
+            
+            if needs_js and len(clean_text) < 200:  # Short content that mentions JS
+                logger.warning(f"⚠️ Detected JavaScript-only content: {clean_text[:100]}...")
+                raise ValueError("Page requires JavaScript - needs Selenium")
+            
+            logger.info(f"✅ Successfully scraped {len(clean_text)} characters using requests (selector: {used_selector})")
+            
+            # Log content preview
+            preview_length = 200
+            content_preview = clean_text[:preview_length] + "..." if len(clean_text) > preview_length else clean_text
+            logger.info(f"📄 Content preview: {content_preview}")
+            
+            return {
+                'url': url,
+                'title': title_text,
+                'content': clean_text,
+                'length': len(clean_text),
+                'status': 'success',
+                'method': 'requests',
+                'selector_used': used_selector
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Requests method failed for {url}: {e}")
+            return {
+                'url': url,
+                'title': url,
+                'content': '',
+                'length': 0,
+                'status': 'error',
+                'error': str(e),
+                'method': 'requests'
+            }
 
     def _parse_html(self, html: Union[bytes, str], url: str) -> Tuple[str, str]:
-        """Parse HTML and extract title and cleaned text."""
+        """Parse HTML and extract title and cleaned text with improved content detection."""
         soup = BeautifulSoup(html, 'html.parser')
 
+        # Remove unwanted elements
         for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
             element.decompose()
 
-        main_content = (
-            soup.find('main') or
-            soup.find('article') or
-            soup.find('div', class_=lambda x: x and 'content' in x.lower()) or
-            soup.find('div', class_=lambda x: x and 'main' in x.lower()) or
-            soup.find('div', id=lambda x: x and 'content' in x.lower()) or
-            soup.body or
-            soup
-        )
+        # Try multiple content selectors in order of preference (same as requests method)
+        content_selectors = [
+            # Specific content areas
+            ('main', {}),
+            ('article', {}),
+            ('[role="main"]', {}),
+            ('.content', {}),
+            ('.main-content', {}),
+            ('.page-content', {}),
+            ('.post-content', {}),
+            ('.entry-content', {}),
+            ('#content', {}),
+            ('#main', {}),
+            # Documentation-specific selectors
+            ('.markdown-body', {}),
+            ('.provider-docs-content', {}),
+            ('.documentation', {}),
+            ('.docs-content', {}),
+            # Generic fallbacks
+            ('div[class*="content"]', {}),
+            ('div[class*="main"]', {}),
+            ('body', {}),
+        ]
+        
+        main_content = None
+        used_selector = None
+        
+        for selector, attrs in content_selectors:
+            if selector.startswith('.'):
+                # Class selector
+                class_name = selector[1:]
+                main_content = soup.find(attrs={'class': class_name}) if not attrs else soup.find(attrs=attrs)
+            elif selector.startswith('#'):
+                # ID selector
+                id_name = selector[1:]
+                main_content = soup.find(attrs={'id': id_name})
+            elif selector.startswith('[') and selector.endswith(']'):
+                # Attribute selector
+                if 'role=' in selector:
+                    main_content = soup.find(attrs={'role': 'main'})
+                elif 'class*=' in selector:
+                    # Partial class match
+                    class_part = selector.split('class*="')[1].split('"')[0]
+                    main_content = soup.find('div', class_=lambda x: x and class_part in ' '.join(x) if isinstance(x, list) else class_part in x if x else False)
+            else:
+                # Tag selector
+                main_content = soup.find(selector, attrs) if attrs else soup.find(selector)
+            
+            if main_content:
+                used_selector = selector
+                logger.info(f"✅ Found content using selector: {selector}")
+                break
 
         if not main_content:
-            raise ValueError("No main content found")
+            logger.warning("⚠️ No specific content area found, using body")
+            main_content = soup.body or soup
+            used_selector = "body (fallback)"
 
+        # Extract title
         title = soup.find('h1') or soup.find('title')
-        title_text = title.get_text().strip() if title else urlparse(url).path
+        title_text = title.get_text().strip() if title else urlparse(url).path.split('/')[-1]
 
+        # Extract and clean text content
         text_content = main_content.get_text(separator='\n', strip=True)
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         clean_text = '\n'.join(lines)
@@ -168,20 +357,67 @@ class WebDocumentProcessor:
         return title_text, clean_text
 
     def _scrape_with_selenium(self, url: str) -> Dict[str, Any]:
-        """Scrape a URL using Selenium and BeautifulSoup."""
+        """Scrape a URL using Selenium and BeautifulSoup with improved waiting and content detection."""
         assert self.driver is not None
-        self.driver.get(url)
-        wait = WebDriverWait(self.driver, 30)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
-        page_html = self.driver.page_source
-        title_text, clean_text = self._parse_html(page_html, url)
-        return {
-            'url': url,
-            'title': title_text,
-            'content': clean_text,
-            'length': len(clean_text),
-            'status': 'success'
-        }
+        
+        try:
+            logger.info(f"🧭 Loading page with Selenium: {url}")
+            self.driver.get(url)
+            
+            # Wait for body to be present
+            wait = WebDriverWait(self.driver, 30)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+            
+            # Additional wait for dynamic content to load
+            time.sleep(2)
+            
+            # Try to wait for common content indicators
+            content_indicators = [
+                (By.TAG_NAME, 'main'),
+                (By.TAG_NAME, 'article'),
+                (By.CLASS_NAME, 'content'),
+                (By.CLASS_NAME, 'main-content'),
+                (By.CLASS_NAME, 'markdown-body'),
+                (By.CLASS_NAME, 'provider-docs-content'),
+            ]
+            
+            content_loaded = False
+            for by, value in content_indicators:
+                try:
+                    wait_short = WebDriverWait(self.driver, 5)
+                    wait_short.until(EC.presence_of_element_located((by, value)))
+                    logger.info(f"✅ Content indicator found: {by}={value}")
+                    content_loaded = True
+                    break
+                except:
+                    continue
+            
+            if not content_loaded:
+                logger.info("⏳ No specific content indicators found, proceeding with general wait")
+            
+            # Get page source and parse
+            page_html = self.driver.page_source
+            title_text, clean_text = self._parse_html(page_html, url)
+            
+            logger.info(f"✅ Successfully scraped {len(clean_text)} characters using Selenium")
+            
+            # Log content preview
+            preview_length = 200
+            content_preview = clean_text[:preview_length] + "..." if len(clean_text) > preview_length else clean_text
+            logger.info(f"📄 Content preview: {content_preview}")
+            
+            return {
+                'url': url,
+                'title': title_text,
+                'content': clean_text,
+                'length': len(clean_text),
+                'status': 'success',
+                'method': 'selenium'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Selenium method failed for {url}: {e}")
+            raise
     
     @contextmanager
     def _connect(self):
@@ -208,35 +444,64 @@ class WebDocumentProcessor:
                 logger.info("🔌 Database connection closed")
     
     def scrape_url(self, url: str) -> Dict[str, Any]:
-        """Scrape content from a URL."""
+        """Scrape content from a URL using Selenium first, then requests fallback."""
         logger.info(f"🌐 Starting to scrape URL: {url}")
 
+        # Try Selenium first if available
         if self.use_selenium and self.driver:
             try:
-                return self._scrape_with_selenium(url)
+                result = self._scrape_with_selenium(url)
+                return result
             except Exception as e:
                 logger.warning(f"⚠️ Selenium scraping failed for {url}: {e}")
+                logger.info("🔄 Falling back to requests method...")
 
+        # Fallback to requests method
         try:
-            response = self._fetch_with_js_fallback(url)
-            title_text, clean_text = self._parse_html(response.content, url)
-            logger.info(f"✅ Successfully scraped {len(clean_text)} characters from {url}")
-            return {
-                'url': url,
-                'title': title_text,
-                'content': clean_text,
-                'length': len(clean_text),
-                'status': 'success'
-            }
+            result = self._scrape_with_requests(url)
+            if result['status'] == 'success':
+                return result
+            else:
+                logger.error(f"❌ Requests fallback also failed for {url}: {result.get('error', 'Unknown error')}")
+                return result
+        except ValueError as e:
+            if "JavaScript" in str(e) and self.selenium_available and self.driver:
+                logger.info("🔄 JavaScript detected, retrying with Selenium...")
+                try:
+                    result = self._scrape_with_selenium(url)
+                    return result
+                except Exception as selenium_e:
+                    logger.error(f"❌ Selenium retry also failed for {url}: {selenium_e}")
+                    return {
+                        'url': url,
+                        'title': url,
+                        'content': '',
+                        'length': 0,
+                        'status': 'error',
+                        'error': f"JavaScript required but Selenium failed: {selenium_e}",
+                        'method': 'selenium_retry_failed'
+                    }
+            else:
+                logger.error(f"❌ JavaScript required but Selenium not available for {url}: {e}")
+                return {
+                    'url': url,
+                    'title': url,
+                    'content': '',
+                    'length': 0,
+                    'status': 'error',
+                    'error': str(e),
+                    'method': 'js_required_no_selenium'
+                }
         except Exception as e:
-            logger.error(f"❌ Error scraping {url}: {e}")
+            logger.error(f"❌ All scraping methods failed for {url}: {e}")
             return {
                 'url': url,
                 'title': url,
                 'content': '',
                 'length': 0,
                 'status': 'error',
-                'error': str(e)
+                'error': str(e),
+                'method': 'all_failed'
             }
     
     def chunk_text(self, text: str, max_tokens: int = 800, overlap: int = 200) -> List[str]:
@@ -458,6 +723,10 @@ class WebDocumentProcessor:
                     'url': url,
                     'error': scraped.get('error', 'Unknown error')
                 })
+                # Add delay even for failed requests to be polite
+                if i < len(urls):  # Don't delay after the last URL
+                    logger.info("⏳ Waiting 2 seconds before next URL...")
+                    time.sleep(2)
                 continue
             
             logger.info(f"✂️ Chunking content from {url}")
@@ -468,6 +737,10 @@ class WebDocumentProcessor:
                     'url': url,
                     'error': 'No content to chunk'
                 })
+                # Add delay even for failed requests to be polite
+                if i < len(urls):  # Don't delay after the last URL
+                    logger.info("⏳ Waiting 2 seconds before next URL...")
+                    time.sleep(2)
                 continue
             
             logger.info(f"✅ Created {len(chunks)} chunks from {url}")
@@ -479,6 +752,11 @@ class WebDocumentProcessor:
                     'chunk_index': j,
                     'chunk': chunk
                 })
+            
+            # Add a polite delay between requests (except for the last one)
+            if i < len(urls):
+                logger.info("⏳ Waiting 2 seconds before next URL...")
+                time.sleep(2)
         
         if not all_chunks_data:
             logger.error("❌ No chunks were created from any URLs")
@@ -545,9 +823,18 @@ class WebDocumentProcessor:
     def close(self) -> None:
         """Close any open resources like the Selenium driver."""
         if self.driver:
-            self.driver.quit()
-            self.driver = None
-            logger.info("🛑 Selenium driver closed")
+            try:
+                self.driver.quit()
+                logger.info("🛑 Selenium driver closed successfully")
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing Selenium driver: {e}")
+            finally:
+                self.driver = None
+                self.selenium_available = False
+        elif not self.selenium_available:
+            logger.info("🛑 No Selenium driver to close (was not available)")
+        else:
+            logger.info("🛑 No Selenium driver to close")
 
 
 def get_google_cloud_docs_urls() -> List[str]:
