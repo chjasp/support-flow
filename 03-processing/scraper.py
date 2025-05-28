@@ -40,6 +40,62 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
 USE_SELENIUM = os.environ.get("USE_SELENIUM", "true").lower() == "true"
 GECKODRIVER_PATH = os.environ.get("GECKODRIVER_PATH")
 
+# Constants for configuration
+DEFAULT_RETRY_COUNT = 5
+DEFAULT_RETRY_DELAY = 2
+DEFAULT_REQUEST_TIMEOUT = 30
+DEFAULT_CHUNK_MAX_TOKENS = 800
+DEFAULT_CHUNK_OVERLAP = 200
+SELENIUM_WAIT_TIMEOUT = 30
+CONTENT_LOAD_DELAY = 2
+URL_DELAY = 2
+PREVIEW_LENGTH = 200
+
+# Content selectors in order of preference
+CONTENT_SELECTORS = [
+    # Specific content areas
+    ('main', {}),
+    ('article', {}),
+    ('[role="main"]', {}),
+    ('.content', {}),
+    ('.main-content', {}),
+    ('.page-content', {}),
+    ('.post-content', {}),
+    ('.entry-content', {}),
+    ('#content', {}),
+    ('#main', {}),
+    # Documentation-specific selectors
+    ('.markdown-body', {}),
+    ('.provider-docs-content', {}),
+    ('.documentation', {}),
+    ('.docs-content', {}),
+    # Generic fallbacks
+    ('div[class*="content"]', {}),
+    ('div[class*="main"]', {}),
+    ('body', {}),
+]
+
+# JavaScript detection indicators
+JS_INDICATORS = [
+    "please enable javascript",
+    "javascript is required",
+    "javascript must be enabled",
+    "enable javascript",
+    "javascript disabled",
+    "requires javascript",
+    "javascript is disabled"
+]
+
+# Selenium content indicators for dynamic content detection
+SELENIUM_CONTENT_INDICATORS = [
+    (By.TAG_NAME, 'main'),
+    (By.TAG_NAME, 'article'),
+    (By.CLASS_NAME, 'content'),
+    (By.CLASS_NAME, 'main-content'),
+    (By.CLASS_NAME, 'markdown-body'),
+    (By.CLASS_NAME, 'provider-docs-content'),
+]
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, 
@@ -80,62 +136,121 @@ class WebDocumentProcessor:
         self.selenium_available = True
         
         if self.use_selenium:
-            logger.info("🧭 Attempting to start Selenium Firefox driver...")
-            
-            # Firefox options configuration
-            options = Options()
-            options.add_argument("--headless")  # Run in headless mode
-            options.add_argument("--width=1920")
-            options.add_argument("--height=1080")
-            
-            # Additional options for better compatibility and stealth
-            options.set_preference(
-                "general.useragent.override",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/109.0"
-            )
-            options.set_preference("dom.webdriver.enabled", False)
-            options.set_preference("useAutomationExtension", False)
-            
-            # Performance and stability options
-            options.set_preference("browser.cache.disk.enable", False)
-            options.set_preference("browser.cache.memory.enable", False)
-            options.set_preference("browser.cache.offline.enable", False)
-            options.set_preference("network.http.use-cache", False)
-            
-            try:
-                if GECKODRIVER_PATH and os.path.exists(GECKODRIVER_PATH):
-                    logger.info(f"🔧 Using GeckoDriver from: {GECKODRIVER_PATH}")
-                    service = Service(executable_path=GECKODRIVER_PATH)
-                    self.driver = webdriver.Firefox(service=service, options=options)
-                else:
-                    logger.info("🔧 Using GeckoDriver from PATH")
-                    self.driver = webdriver.Firefox(options=options)
-                
-                logger.info("✅ Selenium Firefox driver initialized successfully")
-                
-                # Test the driver with a simple page
-                try:
-                    self.driver.get("data:text/html,<html><body>Test</body></html>")
-                    logger.info("✅ Selenium driver test successful")
-                except Exception as test_e:
-                    logger.warning(f"⚠️ Selenium driver test failed: {test_e}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Could not initialize Selenium driver: {e}")
-                logger.info("💡 Tip: Make sure Firefox and geckodriver are installed")
-                logger.info("💡 You can install geckodriver with: brew install geckodriver (macOS)")
-                self.driver = None
-                self.use_selenium = False
-                self.selenium_available = False
+            self._initialize_selenium()
 
-    def _retry_get(self, target: str, *, retries: int = 5, delay: int = 2) -> Optional[requests.Response]:
+    def _initialize_selenium(self):
+        """Initialize Selenium Firefox driver with proper configuration."""
+        logger.info("🧭 Attempting to start Selenium Firefox driver...")
+        
+        # Firefox options configuration
+        options = Options()
+        options.add_argument("--headless")  # Run in headless mode
+        options.add_argument("--width=1920")
+        options.add_argument("--height=1080")
+        
+        # Additional options for better compatibility and stealth
+        options.set_preference(
+            "general.useragent.override",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/109.0"
+        )
+        options.set_preference("dom.webdriver.enabled", False)
+        options.set_preference("useAutomationExtension", False)
+        
+        # Performance and stability options
+        options.set_preference("browser.cache.disk.enable", False)
+        options.set_preference("browser.cache.memory.enable", False)
+        options.set_preference("browser.cache.offline.enable", False)
+        options.set_preference("network.http.use-cache", False)
+        
+        try:
+            if GECKODRIVER_PATH and os.path.exists(GECKODRIVER_PATH):
+                logger.info(f"🔧 Using GeckoDriver from: {GECKODRIVER_PATH}")
+                service = Service(executable_path=GECKODRIVER_PATH)
+                self.driver = webdriver.Firefox(service=service, options=options)
+            else:
+                logger.info("🔧 Using GeckoDriver from PATH")
+                self.driver = webdriver.Firefox(options=options)
+            
+            logger.info("✅ Selenium Firefox driver initialized successfully")
+            
+            # Test the driver with a simple page
+            try:
+                self.driver.get("data:text/html,<html><body>Test</body></html>")
+                logger.info("✅ Selenium driver test successful")
+            except Exception as test_e:
+                logger.warning(f"⚠️ Selenium driver test failed: {test_e}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Could not initialize Selenium driver: {e}")
+            logger.info("💡 Tip: Make sure Firefox and geckodriver are installed")
+            logger.info("💡 You can install geckodriver with: brew install geckodriver (macOS)")
+            self.driver = None
+            self.use_selenium = False
+            self.selenium_available = False
+
+    def _find_content_element(self, soup) -> Tuple[Any, str]:
+        """Find the main content element using the predefined selectors."""
+        main_content = None
+        used_selector = None
+        
+        for selector, attrs in CONTENT_SELECTORS:
+            if selector.startswith('.'):
+                # Class selector
+                class_name = selector[1:]
+                main_content = soup.find(attrs={'class': class_name}) if not attrs else soup.find(attrs=attrs)
+            elif selector.startswith('#'):
+                # ID selector
+                id_name = selector[1:]
+                main_content = soup.find(attrs={'id': id_name})
+            elif selector.startswith('[') and selector.endswith(']'):
+                # Attribute selector
+                if 'role=' in selector:
+                    main_content = soup.find(attrs={'role': 'main'})
+                elif 'class*=' in selector:
+                    # Partial class match
+                    class_part = selector.split('class*="')[1].split('"')[0]
+                    main_content = soup.find('div', class_=lambda x: x and class_part in ' '.join(x) if isinstance(x, list) else class_part in x if x else False)
+            else:
+                # Tag selector
+                main_content = soup.find(selector, attrs) if attrs else soup.find(selector)
+            
+            if main_content:
+                used_selector = selector
+                logger.info(f"✅ Found content using selector: {selector}")
+                break
+        
+        if not main_content:
+            logger.warning("⚠️ No specific content area found, using body")
+            main_content = soup.body or soup
+            used_selector = "body (fallback)"
+        
+        return main_content, used_selector
+
+    def _extract_clean_text(self, element) -> str:
+        """Extract and clean text content from a BeautifulSoup element."""
+        text_content = element.get_text(separator='\n', strip=True)
+        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+        return '\n'.join(lines)
+
+    def _check_js_requirement(self, content: str) -> bool:
+        """Check if the content indicates JavaScript is required."""
+        content_lower = content.lower()
+        needs_js = any(indicator in content_lower for indicator in JS_INDICATORS)
+        return needs_js and len(content) < 200  # Short content that mentions JS
+
+    def _log_content_preview(self, content: str) -> None:
+        """Log a preview of the scraped content."""
+        content_preview = content[:PREVIEW_LENGTH] + "..." if len(content) > PREVIEW_LENGTH else content
+        logger.info(f"📄 Content preview: {content_preview}")
+
+    def _retry_get(self, target: str, *, retries: int = DEFAULT_RETRY_COUNT, delay: int = DEFAULT_RETRY_DELAY) -> Optional[requests.Response]:
         """Helper to GET a URL with exponential backoff."""
         for attempt in range(1, retries + 1):
             try:
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
                 }
-                resp = self.session.get(target, headers=headers, timeout=30)
+                resp = self.session.get(target, headers=headers, timeout=DEFAULT_REQUEST_TIMEOUT)
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise requests.HTTPError(f"{resp.status_code} {resp.reason}")
                 resp.raise_for_status()
@@ -165,97 +280,23 @@ class WebDocumentProcessor:
             for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
                 element.decompose()
             
-            # Try multiple content selectors in order of preference
-            content_selectors = [
-                # Specific content areas
-                ('main', {}),
-                ('article', {}),
-                ('[role="main"]', {}),
-                ('.content', {}),
-                ('.main-content', {}),
-                ('.page-content', {}),
-                ('.post-content', {}),
-                ('.entry-content', {}),
-                ('#content', {}),
-                ('#main', {}),
-                # Documentation-specific selectors
-                ('.markdown-body', {}),
-                ('.provider-docs-content', {}),
-                ('.documentation', {}),
-                ('.docs-content', {}),
-                # Generic fallbacks
-                ('div[class*="content"]', {}),
-                ('div[class*="main"]', {}),
-                ('body', {}),
-            ]
-            
-            main_content = None
-            used_selector = None
-            
-            for selector, attrs in content_selectors:
-                if selector.startswith('.'):
-                    # Class selector
-                    class_name = selector[1:]
-                    main_content = soup.find(attrs={'class': class_name}) if not attrs else soup.find(attrs=attrs)
-                elif selector.startswith('#'):
-                    # ID selector
-                    id_name = selector[1:]
-                    main_content = soup.find(attrs={'id': id_name})
-                elif selector.startswith('[') and selector.endswith(']'):
-                    # Attribute selector
-                    if 'role=' in selector:
-                        main_content = soup.find(attrs={'role': 'main'})
-                    elif 'class*=' in selector:
-                        # Partial class match
-                        class_part = selector.split('class*="')[1].split('"')[0]
-                        main_content = soup.find('div', class_=lambda x: x and class_part in ' '.join(x) if isinstance(x, list) else class_part in x if x else False)
-                else:
-                    # Tag selector
-                    main_content = soup.find(selector, attrs) if attrs else soup.find(selector)
-                
-                if main_content:
-                    used_selector = selector
-                    logger.info(f"✅ Found content using selector: {selector}")
-                    break
-            
-            if not main_content:
-                logger.warning("⚠️ No specific content area found, using body")
-                main_content = soup.body or soup
-                used_selector = "body (fallback)"
+            # Find content using helper method
+            main_content, used_selector = self._find_content_element(soup)
             
             # Extract title
             title = soup.find('h1') or soup.find('title')
             title_text = title.get_text().strip() if title else urlparse(url).path.split('/')[-1]
             
             # Extract and clean text content
-            text_content = main_content.get_text(separator='\n', strip=True)
-            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-            clean_text = '\n'.join(lines)
+            clean_text = self._extract_clean_text(main_content)
             
             # Check if the content indicates JavaScript is required
-            js_indicators = [
-                "please enable javascript",
-                "javascript is required",
-                "javascript must be enabled",
-                "enable javascript",
-                "javascript disabled",
-                "requires javascript",
-                "javascript is disabled"
-            ]
-            
-            content_lower = clean_text.lower()
-            needs_js = any(indicator in content_lower for indicator in js_indicators)
-            
-            if needs_js and len(clean_text) < 200:  # Short content that mentions JS
+            if self._check_js_requirement(clean_text):
                 logger.warning(f"⚠️ Detected JavaScript-only content: {clean_text[:100]}...")
                 raise ValueError("Page requires JavaScript - needs Selenium")
             
             logger.info(f"✅ Successfully scraped {len(clean_text)} characters using requests (selector: {used_selector})")
-            
-            # Log content preview
-            preview_length = 200
-            content_preview = clean_text[:preview_length] + "..." if len(clean_text) > preview_length else clean_text
-            logger.info(f"📄 Content preview: {content_preview}")
+            self._log_content_preview(clean_text)
             
             return {
                 'url': url,
@@ -287,72 +328,15 @@ class WebDocumentProcessor:
         for element in soup(["script", "style", "nav", "footer", "aside", "header"]):
             element.decompose()
 
-        # Try multiple content selectors in order of preference (same as requests method)
-        content_selectors = [
-            # Specific content areas
-            ('main', {}),
-            ('article', {}),
-            ('[role="main"]', {}),
-            ('.content', {}),
-            ('.main-content', {}),
-            ('.page-content', {}),
-            ('.post-content', {}),
-            ('.entry-content', {}),
-            ('#content', {}),
-            ('#main', {}),
-            # Documentation-specific selectors
-            ('.markdown-body', {}),
-            ('.provider-docs-content', {}),
-            ('.documentation', {}),
-            ('.docs-content', {}),
-            # Generic fallbacks
-            ('div[class*="content"]', {}),
-            ('div[class*="main"]', {}),
-            ('body', {}),
-        ]
-        
-        main_content = None
-        used_selector = None
-        
-        for selector, attrs in content_selectors:
-            if selector.startswith('.'):
-                # Class selector
-                class_name = selector[1:]
-                main_content = soup.find(attrs={'class': class_name}) if not attrs else soup.find(attrs=attrs)
-            elif selector.startswith('#'):
-                # ID selector
-                id_name = selector[1:]
-                main_content = soup.find(attrs={'id': id_name})
-            elif selector.startswith('[') and selector.endswith(']'):
-                # Attribute selector
-                if 'role=' in selector:
-                    main_content = soup.find(attrs={'role': 'main'})
-                elif 'class*=' in selector:
-                    # Partial class match
-                    class_part = selector.split('class*="')[1].split('"')[0]
-                    main_content = soup.find('div', class_=lambda x: x and class_part in ' '.join(x) if isinstance(x, list) else class_part in x if x else False)
-            else:
-                # Tag selector
-                main_content = soup.find(selector, attrs) if attrs else soup.find(selector)
-            
-            if main_content:
-                used_selector = selector
-                logger.info(f"✅ Found content using selector: {selector}")
-                break
-
-        if not main_content:
-            logger.warning("⚠️ No specific content area found, using body")
-            main_content = soup.body or soup
-            used_selector = "body (fallback)"
+        # Find content using helper method
+        main_content, used_selector = self._find_content_element(soup)
 
         # Extract title
         title = soup.find('h1') or soup.find('title')
         title_text = title.get_text().strip() if title else urlparse(url).path.split('/')[-1]
 
         # Extract and clean text content
-        text_content = main_content.get_text(separator='\n', strip=True)
-        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-        clean_text = '\n'.join(lines)
+        clean_text = self._extract_clean_text(main_content)
 
         return title_text, clean_text
 
@@ -365,24 +349,15 @@ class WebDocumentProcessor:
             self.driver.get(url)
             
             # Wait for body to be present
-            wait = WebDriverWait(self.driver, 30)
+            wait = WebDriverWait(self.driver, SELENIUM_WAIT_TIMEOUT)
             wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
             
             # Additional wait for dynamic content to load
-            time.sleep(2)
+            time.sleep(CONTENT_LOAD_DELAY)
             
             # Try to wait for common content indicators
-            content_indicators = [
-                (By.TAG_NAME, 'main'),
-                (By.TAG_NAME, 'article'),
-                (By.CLASS_NAME, 'content'),
-                (By.CLASS_NAME, 'main-content'),
-                (By.CLASS_NAME, 'markdown-body'),
-                (By.CLASS_NAME, 'provider-docs-content'),
-            ]
-            
             content_loaded = False
-            for by, value in content_indicators:
+            for by, value in SELENIUM_CONTENT_INDICATORS:
                 try:
                     wait_short = WebDriverWait(self.driver, 5)
                     wait_short.until(EC.presence_of_element_located((by, value)))
@@ -400,11 +375,7 @@ class WebDocumentProcessor:
             title_text, clean_text = self._parse_html(page_html, url)
             
             logger.info(f"✅ Successfully scraped {len(clean_text)} characters using Selenium")
-            
-            # Log content preview
-            preview_length = 200
-            content_preview = clean_text[:preview_length] + "..." if len(clean_text) > preview_length else clean_text
-            logger.info(f"📄 Content preview: {content_preview}")
+            self._log_content_preview(clean_text)
             
             return {
                 'url': url,
@@ -504,7 +475,7 @@ class WebDocumentProcessor:
                 'method': 'all_failed'
             }
     
-    def chunk_text(self, text: str, max_tokens: int = 800, overlap: int = 200) -> List[str]:
+    def chunk_text(self, text: str, max_tokens: int = DEFAULT_CHUNK_MAX_TOKENS, overlap: int = DEFAULT_CHUNK_OVERLAP) -> List[str]:
         """Chunk text into smaller pieces for embedding."""
         logger.info(f"✂️ Chunking text of {len(text)} characters...")
         logger.info(f"📐 Using max_tokens={max_tokens}, overlap={overlap}")
@@ -698,82 +669,49 @@ class WebDocumentProcessor:
         
         return doc_id
     
-    def process_urls(self, urls: List[str]) -> Dict[str, Any]:
-        """Process a list of URLs."""
-        logger.info(f"🚀 Starting to process {len(urls)} URLs")
+    def _process_single_url(self, url: str, url_index: int, total_urls: int) -> Tuple[Optional[Dict], List[Dict]]:
+        """Process a single URL and return chunks data or None if failed."""
+        logger.info(f"🌐 Processing URL {url_index}/{total_urls}: {url}")
+        scraped = self.scrape_url(url)
         
-        results = {
-            'processed': [],
-            'failed': [],
-            'total_chunks': 0
-        }
+        if scraped['status'] == 'error':
+            logger.error(f"❌ Failed to scrape {url}: {scraped.get('error', 'Unknown error')}")
+            return None, [{
+                'url': url,
+                'error': scraped.get('error', 'Unknown error')
+            }]
         
-        all_embeddings = []
-        all_chunks_data = []
+        logger.info(f"✂️ Chunking content from {url}")
+        chunks = self.chunk_text(scraped['content'])
+        if not chunks:
+            logger.error(f"❌ No content to chunk from {url}")
+            return None, [{
+                'url': url,
+                'error': 'No content to chunk'
+            }]
         
-        # First pass: scrape and chunk all URLs
-        logger.info("📡 Phase 1: Scraping and chunking URLs...")
-        for i, url in enumerate(urls, 1):
-            logger.info(f"🌐 Processing URL {i}/{len(urls)}: {url}")
-            scraped = self.scrape_url(url)
-            
-            if scraped['status'] == 'error':
-                logger.error(f"❌ Failed to scrape {url}: {scraped.get('error', 'Unknown error')}")
-                results['failed'].append({
-                    'url': url,
-                    'error': scraped.get('error', 'Unknown error')
-                })
-                # Add delay even for failed requests to be polite
-                if i < len(urls):  # Don't delay after the last URL
-                    logger.info("⏳ Waiting 2 seconds before next URL...")
-                    time.sleep(2)
-                continue
-            
-            logger.info(f"✂️ Chunking content from {url}")
-            chunks = self.chunk_text(scraped['content'])
-            if not chunks:
-                logger.error(f"❌ No content to chunk from {url}")
-                results['failed'].append({
-                    'url': url,
-                    'error': 'No content to chunk'
-                })
-                # Add delay even for failed requests to be polite
-                if i < len(urls):  # Don't delay after the last URL
-                    logger.info("⏳ Waiting 2 seconds before next URL...")
-                    time.sleep(2)
-                continue
-            
-            logger.info(f"✅ Created {len(chunks)} chunks from {url}")
-            
-            for j, chunk in enumerate(chunks):
-                all_chunks_data.append({
-                    'url': url,
-                    'title': scraped['title'],
-                    'chunk_index': j,
-                    'chunk': chunk
-                })
-            
-            # Add a polite delay between requests (except for the last one)
-            if i < len(urls):
-                logger.info("⏳ Waiting 2 seconds before next URL...")
-                time.sleep(2)
+        logger.info(f"✅ Created {len(chunks)} chunks from {url}")
         
-        if not all_chunks_data:
-            logger.error("❌ No chunks were created from any URLs")
-            return results
+        chunks_data = []
+        for j, chunk in enumerate(chunks):
+            chunks_data.append({
+                'url': url,
+                'title': scraped['title'],
+                'chunk_index': j,
+                'chunk': chunk
+            })
         
-        logger.info(f"📊 Total chunks created: {len(all_chunks_data)}")
-        
-        # Get embeddings for all chunks
-        logger.info("🧠 Phase 2: Getting embeddings for all chunks...")
-        all_chunk_texts = [data['chunk'] for data in all_chunks_data]
-        all_embeddings = self.get_embeddings(all_chunk_texts)
-        
-        # Reduce all embeddings to 3D at once for better clustering
-        logger.info("🎯 Phase 3: Reducing embeddings to 3D coordinates...")
-        coords_3d = self.reduce_to_3d(all_embeddings)
-        
-        # Group chunks by URL and store
+        return scraped, chunks_data
+    
+    def _add_url_delay(self, url_index: int, total_urls: int) -> None:
+        """Add a polite delay between URL requests."""
+        if url_index < total_urls:
+            logger.info(f"⏳ Waiting {URL_DELAY} seconds before next URL...")
+            time.sleep(URL_DELAY)
+    
+    def _group_chunks_by_url(self, all_chunks_data: List[Dict], all_embeddings: List[List[float]], 
+                           coords_3d: List[Tuple[float, float, float]]) -> Dict[str, Dict]:
+        """Group chunks, embeddings, and coordinates by URL."""
         logger.info("📦 Phase 4: Grouping chunks by URL...")
         url_chunks = {}
         for i, data in enumerate(all_chunks_data):
@@ -790,7 +728,10 @@ class WebDocumentProcessor:
             url_chunks[url]['embeddings'].append(all_embeddings[i])
             url_chunks[url]['coords_3d'].append(coords_3d[i])
         
-        # Store each URL's data
+        return url_chunks
+    
+    def _store_url_chunks(self, url_chunks: Dict[str, Dict], results: Dict[str, Any]) -> None:
+        """Store each URL's chunks in the database."""
         logger.info("💾 Phase 5: Storing data in database...")
         for j, (url, data) in enumerate(url_chunks.items(), 1):
             logger.info(f"💾 Storing URL {j}/{len(url_chunks)}: {url}")
@@ -812,6 +753,53 @@ class WebDocumentProcessor:
                     'url': url,
                     'error': str(e)
                 })
+    
+    def process_urls(self, urls: List[str]) -> Dict[str, Any]:
+        """Process a list of URLs."""
+        logger.info(f"🚀 Starting to process {len(urls)} URLs")
+        
+        results = {
+            'processed': [],
+            'failed': [],
+            'total_chunks': 0
+        }
+        
+        all_chunks_data = []
+        
+        # First pass: scrape and chunk all URLs
+        logger.info("📡 Phase 1: Scraping and chunking URLs...")
+        for i, url in enumerate(urls, 1):
+            scraped, chunks_data = self._process_single_url(url, i, len(urls))
+            
+            if scraped is None:
+                # Failed to process URL
+                results['failed'].extend(chunks_data)  # chunks_data contains error info
+                self._add_url_delay(i, len(urls))
+                continue
+            
+            all_chunks_data.extend(chunks_data)
+            self._add_url_delay(i, len(urls))
+        
+        if not all_chunks_data:
+            logger.error("❌ No chunks were created from any URLs")
+            return results
+        
+        logger.info(f"📊 Total chunks created: {len(all_chunks_data)}")
+        
+        # Get embeddings for all chunks
+        logger.info("🧠 Phase 2: Getting embeddings for all chunks...")
+        all_chunk_texts = [data['chunk'] for data in all_chunks_data]
+        all_embeddings = self.get_embeddings(all_chunk_texts)
+        
+        # Reduce all embeddings to 3D at once for better clustering
+        logger.info("🎯 Phase 3: Reducing embeddings to 3D coordinates...")
+        coords_3d = self.reduce_to_3d(all_embeddings)
+        
+        # Group chunks by URL and store
+        url_chunks = self._group_chunks_by_url(all_chunks_data, all_embeddings, coords_3d)
+        
+        # Store each URL's data
+        self._store_url_chunks(url_chunks, results)
         
         logger.info(f"🎉 Processing complete!")
         logger.info(f"✅ Successfully processed: {len(results['processed'])} URLs")
