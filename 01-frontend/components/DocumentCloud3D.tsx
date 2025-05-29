@@ -497,17 +497,7 @@ export default function DocumentCloud3D({
         </div>
       )}
 
-      {/* Document count and controls */}
-      <div className="absolute bottom-4 left-4 bg-black/80 text-white p-3 rounded-lg">
-        <p className="text-sm">
-          Showing {visibleCount} of {documents3D.length} documents
-        </p>
-        {realDocuments3D.length > 0 && (
-          <p className="text-xs text-green-300">
-            Using real 3D coordinates
-          </p>
-        )}
-      </div>
+      {/* Document count and controls removed for cleaner interface */}
     </div>
   );
 } 
