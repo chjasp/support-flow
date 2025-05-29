@@ -26,8 +26,10 @@ import {
   ClipboardPaste,
   Loader2,
   RefreshCw,
+  Globe,
 } from "lucide-react"; // Example icons
 import { useSession } from "next-auth/react"; // Import useSession
+import { authFetch } from "@/lib/authFetch";
 
 // Define a type for knowledge items (replace with your actual data structure)
 type KnowledgeItem = {
@@ -44,11 +46,10 @@ type KnowledgeItem = {
 
 
 // --- Define Backend URLs (Use Environment Variables in production) ---
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"; // Your FastAPI backend URL
 const GENERATE_UPLOAD_URL_ENDPOINT = "/api/generate-upload-url"; // Next.js API route
-const GET_ITEMS_ENDPOINT = `${API_BASE_URL}/documents`; // Add the new endpoint URL
-const DELETE_ITEM_ENDPOINT = `${API_BASE_URL}/documents`; // Define the base URL for delete
+const GET_ITEMS_ENDPOINT = '/api/documents'; // Use relative path
+const DELETE_ITEM_ENDPOINT = '/api/documents'; // Use relative path (base)
+const ITEMS_PER_PAGE = 10; // Define items per page for pagination
 
 export default function KnowledgeBasePage() {
   const { data: session, status } = useSession(); // Get session
@@ -59,8 +60,18 @@ export default function KnowledgeBasePage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pastedTitle, setPastedTitle] = useState("");
   const [pastedContent, setPastedContent] = useState("");
+  const [urlList, setUrlList] = useState("");
+  const [urlDescription, setUrlDescription] = useState("");
+  const [isProcessingUrls, setIsProcessingUrls] = useState(false);
   const [isLoading, setIsLoading] = useState(false); // Loading state for uploads/saves
   const [isFetchingItems, setIsFetchingItems] = useState(true); // Keep initial loading state
+  const [currentPage, setCurrentPage] = useState(1); // Add state for current page
+
+  // --- Pagination Calculations ---
+  const totalPages = Math.ceil(knowledgeItems.length / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const currentItems = knowledgeItems.slice(startIndex, endIndex);
 
   // --- Fetch Data Logic (extracted) ---
   const fetchKnowledgeItems = useCallback(async () => {
@@ -81,17 +92,9 @@ export default function KnowledgeBasePage() {
     }
 
     try {
-      const response = await fetch(GET_ITEMS_ENDPOINT, {
-        headers: {
-          Authorization: `Bearer ${session.idToken}`,
-        },
-      });
+      const response = await authFetch(session, GET_ITEMS_ENDPOINT);
       if (!response.ok) {
-         if (response.status === 401 || response.status === 403) {
-            console.error("Unauthorized. Token might be invalid or expired.");
-            // Optionally trigger sign out or refresh
-            // signOut();
-         } else {
+         if (response.status !== 401 && response.status !== 403) {
             throw new Error(`Failed to fetch items: ${response.statusText}`);
          }
          // If unauthorized, clear items and stop
@@ -184,6 +187,15 @@ export default function KnowledgeBasePage() {
     if (event.target.files) {
       setSelectedFiles(Array.from(event.target.files));
     }
+  };
+
+  // --- Pagination Handlers ---
+  const handlePreviousPage = () => {
+    setCurrentPage((prev) => Math.max(prev - 1, 1)); // Ensure page doesn't go below 1
+  };
+
+  const handleNextPage = () => {
+    setCurrentPage((prev) => Math.min(prev + 1, totalPages)); // Ensure page doesn't exceed totalPages
   };
 
   const handleUploadFiles = async () => {
@@ -398,7 +410,7 @@ export default function KnowledgeBasePage() {
         try {
             const errorText = await uploadResponse.text();
             gcsErrorDetails += ` - ${errorText}`;
-        } catch (_) { /* Ignore if can't read text */ }
+        } catch { /* Ignore if can't read text */ }
         throw new Error(gcsErrorDetails);
       }
       console.log(`Successfully uploaded text content as ${filename} to ${gcsUri}`);
@@ -431,6 +443,47 @@ export default function KnowledgeBasePage() {
     }
   };
 
+  const handleProcessUrls = async () => {
+    const urls = urlList
+      .split("\n")
+      .map((u) => u.trim())
+      .filter((u) => u);
+    if (urls.length === 0) {
+      alert("Please enter one or more URLs.");
+      return;
+    }
+
+    setIsProcessingUrls(true);
+    try {
+      const response = await authFetch(session, "/api/web/process-urls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls, description: urlDescription }),
+      });
+
+      if (!response.ok) {
+        let errorText = await response.text();
+        throw new Error(
+          `Failed to process URLs: ${response.status} ${response.statusText} ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+      alert(
+        data.message ||
+          `Started processing ${urls.length} URL(s). They will appear once ready.`
+      );
+      setUrlList("");
+      setUrlDescription("");
+    } catch (error) {
+      console.error("Error processing URLs:", error);
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Error processing URLs: ${message}`);
+    } finally {
+      setIsProcessingUrls(false);
+    }
+  };
+
   const handleDeleteItem = async (id: string, name: string) => {
     // 1. Find the item in the current state
     const itemToDelete = knowledgeItems.find(item => item.id === id);
@@ -455,6 +508,7 @@ export default function KnowledgeBasePage() {
 
     // 4. Optimistic UI update: Remove the item immediately (applies to both cases)
     setKnowledgeItems((prev) => prev.filter((item) => item.id !== id));
+    setCurrentPage(1); // Reset to first page after deleting an item
 
     // 5. If it wasn't a client-side failure, proceed with backend deletion
     if (!isClientSideFailure) {
@@ -468,11 +522,8 @@ export default function KnowledgeBasePage() {
           return;
         }
 
-        const response = await fetch(`${DELETE_ITEM_ENDPOINT}/${id}`, { // Append ID to URL
+        const response = await authFetch(session, `${DELETE_ITEM_ENDPOINT}/${id}`, {
           method: "DELETE",
-          headers: {
-              'Authorization': `Bearer ${session.idToken}`,
-          }
         });
 
         // Handle Backend Response
@@ -482,11 +533,11 @@ export default function KnowledgeBasePage() {
           try {
               const errorData = await response.json();
               errorDetails += ` - ${errorData.detail || JSON.stringify(errorData)}`;
-          } catch (parseError) {
+          } catch { // Removed unused 'parseError' variable
               try {
                   const errorText = await response.text();
                   errorDetails += ` - ${errorText || 'No further details'}`;
-              } catch (textError) { /* Ignore */ }
+              } catch { /* Ignore */ } // Removed unused 'textError' variable
           }
           throw new Error(`Failed to delete item from backend: ${errorDetails}`);
         }
@@ -515,9 +566,9 @@ export default function KnowledgeBasePage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-theme(space.14))] bg-background">
+    <div className="flex h-[calc(100vh-theme(space.14)-theme(space.6))] w-full bg-background">
       {" "}
-      {/* Adjust height based on header */}
+      {/* Adjust height based on header AND layout padding, add w-full */}
       {/* Sidebar */}
       <aside className="w-64 border-r p-4 flex flex-col space-y-2 overflow-y-auto">
         <h2 className="text-xl font-semibold mb-4">Knowledge Base</h2>
@@ -535,14 +586,6 @@ export default function KnowledgeBasePage() {
         >
           <FileUp className="mr-2 h-4 w-4" /> Upload
         </Button>
-        {/* Optional: Add Summary Stats here */}
-        {/*
-         <div className="mt-auto pt-4 border-t">
-            <h3 className="text-sm font-medium text-muted-foreground mb-2">Stats</h3>
-            <p className="text-xs">Total Items: {knowledgeItems.length}</p>
-            <p className="text-xs">Ready: {knowledgeItems.filter(i => i.status === 'Ready').length}</p>
-         </div>
-         */}
       </aside>
       {/* Main Content Area */}
       <main className="flex-1 p-6 overflow-auto">
@@ -604,7 +647,7 @@ export default function KnowledgeBasePage() {
                         </TableCell>
                       </TableRow>
                     ) : knowledgeItems.length > 0 ? (
-                      knowledgeItems.map((item) => (
+                      currentItems.map((item) => (
                         <TableRow key={item.id}>
                           <TableCell className="font-medium">
                             {item.name}
@@ -674,7 +717,8 @@ export default function KnowledgeBasePage() {
                           colSpan={5}
                           className="text-center text-muted-foreground h-24"
                         >
-                          No knowledge items found. Add some!
+                          {/* Update empty message check */}
+                          {knowledgeItems.length === 0 ? "No knowledge items found. Add some!" : "No items on this page."}
                         </TableCell>
                       </TableRow>
                     )}
@@ -682,6 +726,33 @@ export default function KnowledgeBasePage() {
                 </Table>
               </CardContent>
             </Card>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && ( // Only show pagination if there's more than one page
+              <div className="flex items-center justify-end space-x-2 py-4">
+                <span className="text-sm text-muted-foreground">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePreviousPage}
+                  disabled={currentPage === 1}
+                  className="cursor-pointer"
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleNextPage}
+                  disabled={currentPage === totalPages}
+                  className="cursor-pointer"
+                >
+                  Next
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -691,7 +762,7 @@ export default function KnowledgeBasePage() {
               Add to Knowledge Base
             </h1>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Section 1: Upload Files */}
               <Card>
                 <CardHeader>
@@ -810,6 +881,60 @@ export default function KnowledgeBasePage() {
                       </>
                     ) : (
                       "Upload Pasted Text"
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              {/* Section 3: Import URLs */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Globe className="mr-2 h-5 w-5" /> Add URLs
+                  </CardTitle>
+                  <CardDescription>
+                    Provide one or more URLs to scrape and add to the knowledge base.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <label htmlFor="url-list" className="block text-sm font-medium mb-1">
+                      URLs <span className="text-red-500">*</span>
+                    </label>
+                    <Textarea
+                      id="url-list"
+                      value={urlList}
+                      onChange={(e) => setUrlList(e.target.value)}
+                      placeholder="https://example.com/page1\nhttps://example.com/page2"
+                      rows={4}
+                      required
+                      disabled={isProcessingUrls}
+                      className="max-h-32 resize-none overflow-y-auto"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="url-description" className="block text-sm font-medium mb-1">
+                      Description
+                    </label>
+                    <Input
+                      id="url-description"
+                      value={urlDescription}
+                      onChange={(e) => setUrlDescription(e.target.value)}
+                      placeholder="Optional description"
+                      disabled={isProcessingUrls}
+                    />
+                  </div>
+                  <Button
+                    onClick={handleProcessUrls}
+                    disabled={isProcessingUrls || urlList.trim() === ""}
+                    className="cursor-pointer"
+                  >
+                    {isProcessingUrls ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...
+                      </>
+                    ) : (
+                      "Process URLs"
                     )}
                   </Button>
                 </CardContent>

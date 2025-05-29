@@ -46,14 +46,9 @@ type ChatMetadata = {
 const MAX_TITLE_LENGTH = 30;
 const TYPING_INTERVAL_MS = 3;
 
-const BACKEND_API_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
-
-const CHATS_ENDPOINT = `${BACKEND_API_URL}/chats`;
-const getMessagesEndpoint = (chatId: string) =>
-  `${CHATS_ENDPOINT}/${chatId}/messages`;
-const postMessageEndpoint = (chatId: string) =>
-  `${BACKEND_API_URL}/chat/${chatId}`;
+const CHATS_ENDPOINT = '/api/chats';
+const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
+const postMessageEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
 const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
 
 /* -------------------------------------------------------------------------- */
@@ -418,10 +413,10 @@ export default function ChatPage() {
   /* ------------------------------------------------------------------------ */
 
   return (
-    <div className="flex h-[calc(100vh-theme(spacing.14)-theme(spacing.6))] border rounded-lg overflow-hidden">
+    <div className="flex h-[calc(100vh-theme(spacing.14)-theme(spacing.6))] border rounded-lg overflow-hidden w-full">
       {/* ------------------------------ Sidebar ----------------------------- */}
       <aside className="w-64 md:w-72 border-r flex flex-col bg-muted/30">
-        <div className="p-4 border-b">
+        <div className="p-4 border-b h-16 flex items-center">
           <h2 className="text-lg font-semibold tracking-tight">Recent Chats</h2>
         </div>
 
@@ -465,7 +460,7 @@ export default function ChatPage() {
 
       {/* --------------------------- Main  Chat ----------------------------- */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 border-b flex items-center justify-between bg-background/95">
+        <div className="p-4 border-b h-16 flex items-center justify-between bg-background/95">
           <h1 className="text-xl font-bold tracking-tight truncate mr-2">
             {activeChatTitle}
           </h1>
@@ -519,7 +514,7 @@ export default function ChatPage() {
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm, remarkBreaks]}
                       components={{
-                        p: ({ node, ...props }) => <p className="mb-0" {...props} />,
+                        p: ({ /* node, */ ...props }) => <p className="mb-0" {...props} />,
                       }}
                     >
                       {m.text || ""}

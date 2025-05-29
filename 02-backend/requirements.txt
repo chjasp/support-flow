@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 google-genai>=0.4.0 # Or a more recent version
+firebase-admin
 google-cloud-firestore
 google-cloud-storage
 pydantic
@@ -12,3 +13,5 @@ google-auth-oauthlib>=0.7.0
 google-auth-httplib2>=0.1.0
 cloud-sql-python-connector[pg8000]
 google-auth>=2.0.0
+pytest
+pytest-asyncio

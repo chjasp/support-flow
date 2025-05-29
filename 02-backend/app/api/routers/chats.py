@@ -99,34 +99,21 @@ async def post_message_to_chat(
 ):
     """
     Sends a user message to a chat, generates a bot response using RAG,
-    saves both messages, updates chat metadata, and returns both saved messages.
+    saves both messages, updates chat metadata (including title if needed via repo method),
+    and returns both saved messages.
     """
     try:
-        # 1. Save User Message (and get the saved object back)
+        # 1. Save User Message
+        # The add_message_to_chat method now handles the title update internally.
         user_message_to_save = ChatMessage(text=body.query, sender="user")
         saved_user_message = repo.add_message_to_chat(chat_id, user_message_to_save)
 
-        # 2. Check if Chat Title needs updating (first user message)
-        #    (Consider moving title update logic to repo.add_message_to_chat if preferred)
-        try:
-            chat_metadata_list = repo.list_chats() # Inefficient, ideally get single chat meta
-            current_chat = next((c for c in chat_metadata_list if c.id == chat_id), None)
-
-            if current_chat and current_chat.title == _DEFAULT_CHAT_TITLE:
-                 # Generate title from first user message
-                 max_len = settings.MAX_CHAT_TITLE_LENGTH # Use config setting
-                 potential_new_title = body.query[:max_len] + ("..." if len(body.query) > max_len else "")
-                 if potential_new_title:
-                     repo.update_chat_title(chat_id, potential_new_title)
-        except Exception as title_update_err:
-             # Log error but continue processing the message
-             logging.warning(f"Could not update title for chat {chat_id}: {title_update_err}")
+        # 2. REMOVED: Title update logic block is no longer needed here.
+        # The logic is now inside repo.add_message_to_chat
 
 
         # 3. Perform RAG Pipeline
         logging.info(f"Performing RAG for chat {chat_id} with query: '{body.query[:50]}...'")
-        # Assuming pipeline returns text answer and optionally chunk data
-        # If pipeline methods need adjustment, do it here.
         context_chunks = await pipeline.hybrid_search(body.query)
         answer = await pipeline.answer(body.query, context_chunks)
         logging.info(f"Generated answer for chat {chat_id}: '{answer[:50]}...'")
@@ -143,8 +130,9 @@ async def post_message_to_chat(
                 )
         sources = list(unique_docs.values())
 
-        # 5. Save Bot Message (and get the saved object back)
+        # 5. Save Bot Message
         bot_message_to_save = ChatMessage(text=answer, sender="bot", sources=sources)
+        # Note: add_message_to_chat only updates title on USER messages
         saved_bot_message = repo.add_message_to_chat(chat_id, bot_message_to_save)
 
         # 6. Prepare and Return the New Response Model

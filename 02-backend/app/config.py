@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     max_context_chunks: int = 5
     cors_origins: List[str] = ["http://localhost:3000", "https://YOUR_FRONTEND_CLOUD_RUN_URL"]
     google_service_account_json: Optional[str] = None
-    gmail_impersonate_email: Optional[str] = None
 
     # --- Cloud SQL Settings ---
     cloud_sql_instance: str # e.g., project:region:instance
@@ -24,6 +23,12 @@ class Settings(BaseSettings):
 
     # --- Add Auth Audience ---
     auth_google_client_id: str # The Client ID used by the Next.js frontend
+
+    # --- Chat Settings ---
+    max_chat_title_length: int = 50
+
+    # --- Processing Service Settings ---
+    processing_service_url: str = "http://localhost:8080"  # Default for local development
 
     class Config:
         env_file = ".env"

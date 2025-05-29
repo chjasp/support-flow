@@ -12,21 +12,14 @@ from app.models.domain import ChatMessage, ChatMetadata, DocumentSource # Import
 
 _DEFAULT_CHAT_TITLE = "New Chat"
 
-# Define a simple structure for the interaction data (can be formalized in domain.py if preferred)
-class EmailInteractionData:
-    def __init__(self, id: str, replyDraft: Optional[str] = None, refinementHistory: Optional[List[ChatMessage]] = None, lastUpdated: Optional[_dt.datetime] = None):
-        self.id = id
-        self.replyDraft = replyDraft if replyDraft is not None else "" # Default to empty string
-        self.refinementHistory = refinementHistory if refinementHistory is not None else [] # Default to empty list
-        self.lastUpdated = lastUpdated
+
 
 
 class FirestoreRepository:
-    """Repository for interacting with Chat and Email Interaction data in Firestore."""
+    """Repository for interacting with Chat data in Firestore."""
     def __init__(self, project_id: str, db_name: str = "(default)") -> None:
         self.db = firestore.Client(project=project_id, database=db_name)
         self._chats_coll = self.db.collection("chats") # Chat collection reference
-        self._email_interactions_coll = self.db.collection("email_interactions") # New collection reference
         logging.info(f"FirestoreRepository initialized for project '{project_id}', database '{db_name}'")
 
     # --------------------------------------------------------------------- #
@@ -111,11 +104,18 @@ class FirestoreRepository:
         return messages
 
     def add_message_to_chat(self, chat_id: str, message: ChatMessage) -> ChatMessage:
-        """Adds a message to a chat's subcollection and returns the saved message."""
+        """
+        Adds a message to a chat's subcollection, updates lastActivity,
+        and updates the title if it's the first user message.
+        Returns the saved message.
+        """
         chat_ref = self._chats_coll.document(chat_id)
-        if not chat_ref.get().exists:
+        chat_snapshot = chat_ref.get() # Get current chat state first
+
+        if not chat_snapshot.exists:
             raise NotFound(f"Chat with ID {chat_id} not found when trying to add message")
 
+        chat_data = chat_snapshot.to_dict()
         messages_coll = chat_ref.collection("messages")
         message_ref   = messages_coll.document()
 
@@ -123,7 +123,7 @@ class FirestoreRepository:
         message_data = {
             "text":      message.text,
             "sender":    message.sender,
-            "timestamp": SERVER_TIMESTAMP,
+            "timestamp": SERVER_TIMESTAMP, # Use server timestamp for message
         }
         if message.sources:
             # store each DocumentSource as plain dict
@@ -131,9 +131,29 @@ class FirestoreRepository:
                 s.model_dump(exclude_none=True) for s in message.sources
             ]
 
+        # Add the message document
         message_ref.set(message_data)
-        chat_ref.update({"lastActivity": SERVER_TIMESTAMP})
 
+        # ------- Prepare update for the main chat document -------
+        update_payload = {"lastActivity": SERVER_TIMESTAMP} # Always update lastActivity
+
+        # Check if title needs updating (first user message in a default-titled chat)
+        if message.sender == "user" and chat_data.get("title") == _DEFAULT_CHAT_TITLE:
+            # Generate title from first user message
+            settings = get_settings() # Get settings instance
+            max_len = settings.max_chat_title_length
+            new_title = message.text[:max_len] + ("..." if len(message.text) > max_len else "")
+            if new_title: # Ensure title is not empty
+                update_payload["title"] = new_title
+                logging.info(f"Updating title for chat {chat_id} to '{new_title}' based on first user message.")
+
+        # Update the main chat document (lastActivity and potentially title)
+        # This handles the title update persistence directly
+        chat_ref.update(update_payload)
+
+
+        # --- Fetch the saved message data to return ---
+        # Fetch again after set/update to get the actual server timestamp.
         saved_snapshot = message_ref.get()
         saved_data     = saved_snapshot.to_dict()
 
@@ -148,12 +168,14 @@ class FirestoreRepository:
             id=message_ref.id,
             text=saved_data.get("text", ""),
             sender=saved_data.get("sender", message.sender),
-            timestamp=saved_data.get("timestamp"),
+            timestamp=saved_data.get("timestamp"), # Use timestamp from saved data
             sources=sources_out,
         )
 
     def update_chat_title(self, chat_id: str, new_title: str) -> None:
         """Updates the title of a specific chat."""
+        # Note: This method is now less likely to be called directly for the
+        # 'first message' scenario, but kept for potential explicit title updates.
         chat_ref = self._chats_coll.document(chat_id)
         try:
             chat_ref.update({"title": new_title})
@@ -162,7 +184,7 @@ class FirestoreRepository:
             raise NotFound(f"Chat with ID {chat_id} not found when trying to update title")
         except Exception as e:
             logging.error(f"Failed to update title for chat {chat_id}: {e}")
-            # Decide if you want to re-raise or just log
+            raise # Re-raise the exception to ensure it's not swallowed
 
     def delete_chat(self, chat_id: str) -> None:
         """Deletes a chat document and its messages subcollection."""
@@ -189,95 +211,5 @@ class FirestoreRepository:
         chat_ref.delete()
         logging.info(f"Deleted chat {chat_id} and {deleted_count} messages.")
 
-    # --- Email Interaction Persistence ---
-
-    def get_email_interaction(self, email_id: str) -> Optional[EmailInteractionData]:
-        """Retrieves the interaction data (draft, history) for a given email ID."""
-        doc_ref = self._email_interactions_coll.document(email_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            logging.info(f"No interaction data found for email {email_id}.")
-            # Return default structure instead of None for easier frontend handling
-            return EmailInteractionData(id=email_id)
-        try:
-            data = doc.to_dict()
-            # Convert Firestore array to list of ChatMessage objects if needed
-            # Assuming stored history matches ChatMessage structure {sender: str, text: str}
-            history_raw = data.get("refinementHistory", [])
-            history = [ChatMessage(**msg) for msg in history_raw]
-
-            return EmailInteractionData(
-                id=doc.id,
-                replyDraft=data.get("replyDraft"),
-                refinementHistory=history,
-                lastUpdated=data.get("lastUpdated") # Ensure this is datetime if needed, else ignore
-            )
-        except Exception as e:
-            logging.error(f"Error parsing interaction data for email {email_id}: {e}", exc_info=True)
-            # Return default on error? Or raise? Let's return default for now.
-            return EmailInteractionData(id=email_id)
 
 
-    def update_reply_draft(self, email_id: str, draft: str) -> None:
-        """Updates or creates the reply draft for an email interaction."""
-        doc_ref = self._email_interactions_coll.document(email_id)
-        now = SERVER_TIMESTAMP
-        try:
-            # Use set with merge=True to create or update
-            doc_ref.set({"replyDraft": draft, "lastUpdated": now}, merge=True)
-            logging.info(f"Updated reply draft for email {email_id}.")
-        except Exception as e:
-            logging.error(f"Failed to update reply draft for email {email_id}: {e}", exc_info=True)
-            raise # Re-raise to be handled by API layer
-
-    def add_refinement_message(self, email_id: str, message: ChatMessage) -> None:
-        """Adds a message to the refinement history for an email interaction."""
-        doc_ref = self._email_interactions_coll.document(email_id)
-        now = SERVER_TIMESTAMP
-        # Convert Pydantic model to dict, ensuring only expected fields are included
-        # Assuming ChatMessage has 'sender' and 'text'
-        message_dict = {"sender": message.sender, "text": message.text}
-
-        try:
-             # Use firestore.ArrayUnion
-             # Use set with merge=True to ensure document exists if adding first message
-            doc_ref.set({
-                "refinementHistory": firestore.ArrayUnion([message_dict]),
-                "lastUpdated": now
-            }, merge=True)
-            logging.info(f"Added refinement message from {message.sender} for email {email_id}.")
-        except Exception as e:
-            logging.error(f"Failed to add refinement message for email {email_id}: {e}", exc_info=True)
-            raise # Re-raise
-
-    def clear_refinement_history(self, email_id: str) -> None:
-        """Clears the refinement history for a specific email interaction."""
-        doc_ref = self._email_interactions_coll.document(email_id)
-        now = SERVER_TIMESTAMP
-        try:
-            # Update the history field to an empty array
-            # Use update, assuming the document might exist (if not, it won't fail)
-            doc_ref.update({
-                "refinementHistory": [],
-                "lastUpdated": now
-            })
-            logging.info(f"Cleared refinement history for email {email_id}.")
-        except NotFound:
-            logging.warning(f"No interaction document found for email {email_id} when trying to clear history. No action taken.")
-            # No need to raise, clearing non-existent history is not an error
-        except Exception as e:
-            logging.error(f"Failed to clear refinement history for email {email_id}: {e}", exc_info=True)
-            raise # Re-raise other errors
-
-    # Optional: Clear interaction data if needed (delete whole document)
-    def delete_email_interaction(self, email_id: str) -> None:
-        """Deletes the interaction data for a given email ID."""
-        doc_ref = self._email_interactions_coll.document(email_id)
-        try:
-            doc_ref.delete()
-            logging.info(f"Deleted interaction data for email {email_id}.")
-        except NotFound:
-             logging.warning(f"No interaction data found to delete for email {email_id}.")
-        except Exception as e:
-            logging.error(f"Failed to delete interaction data for email {email_id}: {e}", exc_info=True)
-            raise

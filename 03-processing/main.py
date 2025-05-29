@@ -14,14 +14,18 @@ import tiktoken
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from google.cloud import storage
-from google.cloud.sql.connector import Connector
+from google.cloud.sql.connector import Connector, IPTypes
 from pydantic import BaseModel
 
 import vertexai
 import google.genai as genai
 from google.genai import types as genai_types
 from vertexai.language_models import TextEmbeddingModel
+from vertexai.generative_models import ToolConfig
 from dotenv import load_dotenv
+
+# Import the new scraper
+from scraper import WebDocumentProcessor
 
 load_dotenv()
 
@@ -37,6 +41,8 @@ INSTANCE_CONNECTION_NAME: str = os.environ["CLOUD_SQL_INSTANCE"]
 DB_USER: str = os.environ["CLOUD_SQL_USER"]
 DB_PASS: str = os.environ["CLOUD_SQL_PASSWORD"]
 DB_NAME: str = os.environ["CLOUD_SQL_DB"]
+IP_TYPE_ENV: str = os.environ.get("CLOUD_SQL_IP_TYPE", "PRIVATE").upper()
+IP_TYPE = IPTypes.PRIVATE if IP_TYPE_ENV == "PRIVATE" else IPTypes.PUBLIC
 EMBED_MODEL: str = os.environ["EMBED_MODEL"]
 GEMINI_MODEL: str = os.environ["GEMINI_MODEL"]
 
@@ -82,7 +88,10 @@ GEN_CONFIG = genai_types.GenerateContentConfig(
     # response_modalities=["TEXT"], # Optional: Specify modality if needed, often inferred
     temperature=0,
     top_p=0.1,
-    max_output_tokens=65535 # Adjusted based on common limits, check model specifics if needed
+    max_output_tokens=65535, # Adjusted based on common limits, check model specifics if needed <= model limit
+    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+        disable=True                     # ←‑‑‑ really disables AFC
+    ),
 )
 # -----------------------------------------
 
@@ -102,7 +111,7 @@ def _connect() -> Iterator["pg8000.Connection"]:
         user=DB_USER,
         password=DB_PASS,
         db=DB_NAME,
-        ip_type="PRIVATE",
+        ip_type=IP_TYPE,
     )
     try:
         yield conn
@@ -260,7 +269,7 @@ def _gemini_extract(pdf_part: genai_types.Part) -> list[dict]:
         raise # Re-raise the exception
 
 
-def _extract_paginated(pdf_path: Path, batch_size: int = 10) -> list[dict]:
+def _extract_paginated(pdf_path: Path, batch_size: int = 5) -> list[dict]:
     """Opens a PDF, extracts content in batches using Gemini, and returns combined JSON."""
     logger.info(f"Starting paginated extraction for {pdf_path} with batch size {batch_size}")
     all_pages_json = []
@@ -678,6 +687,59 @@ async def ingest(request: Request):
 
     return _process_blob(bucket_name=bucket, object_name=name, generation=generation)
 
+
+# Pydantic models for URL processing
+class UrlProcessRequest(BaseModel):
+    urls: List[str]
+    description: str = ""
+
+@app.post("/process-urls")
+async def process_urls(request: UrlProcessRequest):
+    """
+    Process a list of URLs for both RAG and 3D visualization.
+    This endpoint handles web scraping, embedding generation, and 3D coordinate calculation.
+    """
+    # ===== LOGGING POINT 1: Processing Service Request =====
+    logger.info("===== PROCESSING SERVICE DEBUG =====")
+    logger.info(f"Received request to process {len(request.urls)} URLs")
+    logger.info(f"URLs: {request.urls}")
+    logger.info(f"Description: {request.description}")
+    
+    for i, url in enumerate(request.urls):
+        logger.info(f"URL {i+1}: {url} (type: {type(url)}, length: {len(str(url))})")
+    
+    try:
+        # Initialize the web document processor
+        processor = WebDocumentProcessor()
+        
+        # ===== LOGGING POINT 2: Before Processing =====
+        logger.info("Initialized WebDocumentProcessor, starting URL processing...")
+        
+        # Process all URLs
+        result = processor.process_urls(request.urls)
+        
+        logger.info(f"URL processing completed. Processed: {len(result['processed'])}, Failed: {len(result['failed'])}")
+        logger.info("====================================")
+        
+        return {
+            "status": "completed",
+            "processed_count": len(result['processed']),
+            "failed_count": len(result['failed']),
+            "total_chunks": result['total_chunks'],
+            "details": result
+        }
+        
+    except Exception as e:
+        # ===== LOGGING POINT 3: Processing Error =====
+        logger.error("===== PROCESSING SERVICE ERROR =====")
+        logger.error(f"Error processing URLs: {e}", exc_info=True)
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Error args: {e.args}")
+        logger.error("====================================")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process URLs: {str(e)}"
+        )
 
 if __name__ == "__main__":
     # Add PyMuPDF license check/acknowledgement if required by your usage context

@@ -1,11 +1,9 @@
 import logging
 from functools import lru_cache
-from typing import Generator
-from fastapi import Depends, HTTPException, status
-import os
-import google.auth
-from google.oauth2 import service_account
-from google.auth.transport.requests import Request
+from typing import Generator, Optional
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from firebase_admin import firestore
 
 # Cloud SQL Connector
 from google.cloud.sql.connector import Connector, IPTypes
@@ -18,9 +16,71 @@ from app.services.llm_service import LLMService
 from app.services.firestore import FirestoreRepository
 from app.services.pipeline import DocumentPipeline
 from app.services.cloudsql import CloudSqlRepository
-from app.services.gmail import GmailService
+
+
+# Firestore client (removed unused import)
+
+# Authentication dependencies
+from .auth import verify_token, get_current_user_email
+
+# Service Imports (removed missing RAG service)
 
 settings = get_settings() # Get settings at module level
+
+# --- Simplified Logging Utility ---
+def log_error(message: str, exception: Exception = None):
+    """Centralized error logging."""
+    if exception:
+        logging.error(f"{message}: {exception}", exc_info=True)
+    else:
+        logging.error(message)
+
+# --- Security Scheme ---
+security = HTTPBearer(auto_error=False)
+
+# --- Authentication Dependency ---
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> dict:
+    """
+    Dependency to verify JWT token and extract user information.
+    Raises HTTPException if authentication fails.
+    """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        # Create a token credential object for verify_token
+        from fastapi.security import HTTPAuthorizationCredentials
+        token_creds = HTTPAuthorizationCredentials(
+            scheme="Bearer", 
+            credentials=credentials.credentials
+        )
+        # Verify the token and get user info
+        user_info = await verify_token(token_creds)
+        logging.debug(f"User authenticated: {user_info.get('email')}")
+        return user_info
+    except ValueError as ve:
+        log_error("Token verification failed", ve)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {ve}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        log_error("Unexpected authentication error", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication service error"
+        )
+
+# --- RAG Service Dependency (removed) ---
+
+# --- Firestore Repository Dependency (removed unused function) ---
 
 # --- Firestore / Vertex / Pipeline Dependencies (Existing) ---
 
@@ -67,28 +127,4 @@ def get_pipeline(
     return DocumentPipeline(settings=settings, repo=repo, llm_service=llm_service, sql_repo=sql_repo)
 
 
-# --- Gmail Service Dependency (Updated) ---
-def get_gmail_service(settings: Settings = Depends(get_settings)) -> GmailService:
-    """Provides a GmailService instance using configured settings."""
-    try:
-        # GmailService now handles its own credential building using settings
-        service = GmailService(settings=settings)
-        # Check if the service was built successfully within the class
-        if not service.service:
-             raise ConnectionError("Gmail service object could not be built within GmailService class.")
-        logging.info("GmailService instance created successfully via dependency.")
-        return service
 
-    except ConnectionError as ce: # Catch specific connection errors raised during build
-        logging.error(f"Failed to initialize GmailService (ConnectionError): {ce}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Could not connect to Gmail: {ce}"
-        )
-    except Exception as e:
-        logging.error(f"Failed to initialize GmailService (General Error): {e}", exc_info=True)
-        # Raise a specific error to indicate initialization failure
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not initialize Gmail service: {e}"
-        )
