@@ -3,6 +3,7 @@
 import { useSession, signIn } from "next-auth/react";
 import { authFetch } from "@/lib/authFetch";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Loader2 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -58,8 +59,6 @@ export default function HomePage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<Document3D | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
 
   // Agent state management
   const [agents, setAgents] = useState<Agent[]>([
@@ -91,9 +90,8 @@ export default function HomePage() {
       initialPosition: [8, 2, -8]
     }
   ]);
-  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [agentInstruction, setAgentInstruction] = useState('');
+  const [activeAgentId, setActiveAgentId] = useState('maxi');
 
   // Fetch documents from the knowledge base
   const fetchDocuments = useCallback(async () => {
@@ -101,7 +99,6 @@ export default function HomePage() {
       return;
     }
 
-    setIsLoading(true);
     try {
       const response = await authFetch(session, '/api/documents');
 
@@ -115,8 +112,6 @@ export default function HomePage() {
       }
     } catch (error) {
       console.error('Error fetching documents:', error);
-    } finally {
-      setIsLoading(false);
     }
   }, [status, session]);
 
@@ -139,12 +134,6 @@ export default function HomePage() {
     }
   };
 
-  // Handle agent selection
-  const handleAgentSelect = (agent: Agent) => {
-    setSelectedAgent(agent);
-    setIsAgentChatOpen(true);
-    setAgentInstruction('');
-  };
 
   // Generate random positions for agent movement
   const generateRandomPositions = (count: number): [number, number, number][] => {
@@ -160,29 +149,28 @@ export default function HomePage() {
   };
 
   // Start agent task with movement
-  const handleStartAgentTask = () => {
-    if (!selectedAgent || !agentInstruction.trim()) return;
+  const handleStartAgentTask = (agentId: string) => {
+    if (!agentInstruction.trim()) return;
 
     // Generate 5 random waypoints
     const waypoints = generateRandomPositions(5);
-    
+
     // Update agent status and start movement
-    setAgents(prev => prev.map(agent => 
-      agent.id === selectedAgent.id 
-        ? { 
-            ...agent, 
-            status: 'moving' as const, 
+    setAgents(prev => prev.map(agent =>
+      agent.id === agentId
+        ? {
+            ...agent,
+            status: 'moving' as const,
             currentTask: agentInstruction.trim()
           }
         : agent
     ));
 
-    // Close the chat modal
-    setIsAgentChatOpen(false);
-    setSelectedAgent(null);
-
     // Start the movement sequence
-    moveAgentThroughWaypoints(selectedAgent.id, waypoints);
+    moveAgentThroughWaypoints(agentId, waypoints);
+
+    // Clear input after sending
+    setAgentInstruction('');
   };
 
   // Move agent through waypoints and back to initial position
@@ -251,137 +239,43 @@ export default function HomePage() {
         onDocumentSelect={handleDocumentSelect}
         agents={agents}
         setAgents={setAgents}
-        onAgentSelect={handleAgentSelect}
       />
 
-      {/* Combined Control Panel */}
-      <div className="absolute bottom-4 right-4 bg-black/90 text-white p-6 rounded-lg max-w-sm shadow-2xl shadow-black/50">
-        {/* Search & Filter Section */}
-        <div className="mb-6">
-          <h3 className="font-semibold mb-3">Search & Filter</h3>
-          
-          {/* Search Input */}
-          <input
-            placeholder="Search documents..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full mb-3 px-3 py-2 text-white bg-gray-800 border border-gray-600 rounded-md placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-
-          {/* File Type Filters */}
-          <div className="mb-3">
-            <p className="text-xs text-gray-300 mb-2">Filter by type:</p>
-            <div className="flex flex-wrap gap-1">
-              {documents.length > 0 && Array.from(new Set(documents.map(doc => doc.fileType || doc.type))).map(type => (
-                <span
-                  key={type}
-                  className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium cursor-pointer ${
-                    false ? "bg-blue-500 text-white" : "border border-gray-400 text-gray-300"
-                  }`}
-                >
-                  {type}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Results Count */}
-          <p className="text-xs text-gray-400">
-            Showing {documents.filter(doc => doc.status === 'Ready').length} ready documents
-          </p>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-gray-700 mb-6"></div>
-
-        {/* AI Agents Section */}
-        <div>
-          <h3 className="font-semibold mb-3 text-center">AI Agents</h3>
-          <div className="space-y-2">
-            {agents.map((agent) => (
-              <div
-                key={agent.id}
-                onClick={() => handleAgentSelect(agent)}
-                className="cursor-pointer p-3 rounded-lg border-2 transition-all hover:bg-white/10"
-                style={{ borderColor: agent.color }}
-              >
-                <div className="flex items-center gap-3">
-                  <div
-                    className="w-4 h-4 rounded-full"
-                    style={{ backgroundColor: agent.color }}
-                  />
-                  <div className="flex-1">
-                    <p className="font-medium">{agent.name}</p>
-                    <p className="text-xs text-gray-300 capitalize">{agent.status}</p>
-                    {agent.currentTask && (
-                      <p className="text-xs text-blue-300 mt-1 truncate">
-                        {agent.currentTask}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Agent interaction bar */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-xl flex items-center gap-2 bg-black/80 text-white p-2 rounded-lg">
+        <select
+          value={activeAgentId}
+          onChange={(e) => setActiveAgentId(e.target.value)}
+          className="bg-gray-800 text-white px-2 py-1 rounded-md"
+        >
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name}
+            </option>
+          ))}
+        </select>
+        <Input
+          placeholder="Ask the agent..."
+          value={agentInstruction}
+          onChange={(e) => setAgentInstruction(e.target.value)}
+          className="flex-1"
+        />
+        <Button
+          size="icon"
+          onClick={() => handleStartAgentTask(activeAgentId)}
+          disabled={!agentInstruction.trim()}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            className="w-5 h-5"
+          >
+            <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+          </svg>
+          <span className="sr-only">Send</span>
+        </Button>
       </div>
-
-      {/* Agent Chat Modal */}
-      <Dialog open={isAgentChatOpen} onOpenChange={setIsAgentChatOpen}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {selectedAgent && (
-                <div
-                  className="w-4 h-4 rounded-full"
-                  style={{ backgroundColor: selectedAgent.color }}
-                />
-              )}
-              Chat with {selectedAgent?.name}
-            </DialogTitle>
-            <DialogDescription>
-              Give {selectedAgent?.name} a task to research in the document space.
-            </DialogDescription>
-            <p className="text-sm text-gray-300 mt-2">
-              <strong>System Prompt:</strong> You are a helpful research assistant.
-            </p>
-            <ul className="text-sm text-gray-300 list-disc list-inside">
-              <li>Browsing the internet</li>
-              <li>Running code in a sandbox</li>
-            </ul>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <label htmlFor="instruction" className="text-sm font-medium">
-                What would you like {selectedAgent?.name} to research?
-              </label>
-              <textarea
-                id="instruction"
-                placeholder="e.g., Find information about our pricing structure and competitive advantages"
-                value={agentInstruction}
-                onChange={(e) => setAgentInstruction(e.target.value)}
-                className="min-h-[100px] px-3 py-2 border border-gray-300 rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button
-                onClick={handleStartAgentTask}
-                disabled={!agentInstruction.trim()}
-                className="flex-1"
-              >
-                🚀 Start Research
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setIsAgentChatOpen(false)}
-                className="flex-1"
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Document Details Modal */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
