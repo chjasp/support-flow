@@ -5,7 +5,7 @@ import { authFetch } from "@/lib/authFetch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
 import DocumentCloud3D from "@/components/DocumentCloud3D";
+import ChatSidebar, { ChatSidebarHandle } from "@/components/ChatSidebar";
 
 // Document interface matching the knowledge base
 interface Document {
@@ -92,6 +93,7 @@ export default function HomePage() {
   ]);
   const [agentInstruction, setAgentInstruction] = useState('');
   const [activeAgentId, setActiveAgentId] = useState('maxi');
+  const chatSidebarRef = useRef<ChatSidebarHandle>(null);
 
   // Fetch documents from the knowledge base
   const fetchDocuments = useCallback(async () => {
@@ -168,6 +170,9 @@ export default function HomePage() {
 
     // Start the movement sequence
     moveAgentThroughWaypoints(agentId, waypoints);
+
+    // Send the instruction to the chat sidebar
+    chatSidebarRef.current?.sendMessage(agentInstruction.trim());
 
     // Clear input after sending
     setAgentInstruction('');
@@ -343,6 +348,7 @@ export default function HomePage() {
           )}
         </DialogContent>
       </Dialog>
+      <ChatSidebar ref={chatSidebarRef} />
     </div>
   );
 }
