@@ -66,7 +66,7 @@ export default function HomePage() {
     {
       id: 'oli',
       name: 'Oli',
-      color: '#8B5CF6', // Purple
+      color: '#1FBD54',
       position: [-8, 2, -8],
       targetPosition: [-8, 2, -8],
       status: 'idle',
@@ -75,7 +75,7 @@ export default function HomePage() {
     {
       id: 'maxi',
       name: 'Maxi',
-      color: '#10B981', // Green
+      color: '#3477F5',
       position: [0, 2, -10],
       targetPosition: [0, 2, -10],
       status: 'idle',
@@ -84,7 +84,7 @@ export default function HomePage() {
     {
       id: 'jannik',
       name: 'Jannik',
-      color: '#F59E0B', // Orange
+      color: '#E74E0F',
       position: [8, 2, -8],
       targetPosition: [8, 2, -8],
       status: 'idle',
@@ -251,6 +251,7 @@ export default function HomePage() {
         onDocumentSelect={handleDocumentSelect}
         agents={agents}
         setAgents={setAgents}
+        onAgentSelect={handleAgentSelect}
       />
 
       {/* Combined Control Panel */}
@@ -341,6 +342,13 @@ export default function HomePage() {
             <DialogDescription>
               Give {selectedAgent?.name} a task to research in the document space.
             </DialogDescription>
+            <p className="text-sm text-gray-300 mt-2">
+              <strong>System Prompt:</strong> You are a helpful research assistant.
+            </p>
+            <ul className="text-sm text-gray-300 list-disc list-inside">
+              <li>Browsing the internet</li>
+              <li>Running code in a sandbox</li>
+            </ul>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
