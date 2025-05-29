@@ -203,6 +203,7 @@ function AgentSphere({
           emissive={agent.color}
           emissiveIntensity={agent.status === 'moving' ? 0.5 : 0.3}
           opacity={1}
+          transparent={false}
         />
       </mesh>
 
@@ -220,7 +221,7 @@ function AgentSphere({
               position={[x, 0, z]}
               center
             >
-              <div style={{ color: agent.color }}>
+              <div style={{ color: agent.color, opacity: 0.5 }}>
                 <IconComponent size={16} />
               </div>
             </Html>
