@@ -4,33 +4,7 @@ import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
 import { useSession } from 'next-auth/react';
-
-// Simple Badge component
-const Badge = ({ 
-  children, 
-  variant = "default", 
-  className = "", 
-  onClick 
-}: { 
-  children: React.ReactNode; 
-  variant?: "default" | "outline"; 
-  className?: string; 
-  onClick?: () => void; 
-}) => (
-  <span
-    className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium cursor-pointer ${
-      variant === "default" 
-        ? "bg-blue-500 text-white" 
-        : "border border-gray-400 text-gray-300"
-    } ${className}`}
-    onClick={onClick}
-  >
-    {children}
-  </span>
-);
 
 // Document interface matching the knowledge base
 interface Document {
@@ -130,8 +104,8 @@ function DocumentSphere({
       >
         <sphereGeometry args={[document.size, 32, 32]} />
         <meshStandardMaterial
-          color={isHighlighted ? '#ffff00' : document.color}
-          emissive={hovered || isHovered || isHighlighted ? (isHighlighted ? '#ffff00' : document.color) : '#000000'}
+          color={isHighlighted ? '#ffff00' : '#ffffff'}
+          emissive={hovered || isHovered || isHighlighted ? (isHighlighted ? '#ffff00' : '#ffffff') : '#000000'}
           emissiveIntensity={(hovered || isHovered || isHighlighted) ? 0.3 : 0}
           opacity={isFiltered ? 0.2 : 1}
         />
@@ -154,12 +128,14 @@ function DocumentSphere({
 }
 
 // Individual agent sphere component
-function AgentSphere({ 
-  agent, 
-  setAgents 
+function AgentSphere({
+  agent,
+  setAgents,
+  onAgentClick
 }: {
   agent: Agent;
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
+  onAgentClick: (agent: Agent) => void;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
@@ -201,6 +177,7 @@ function AgentSphere({
         ref={meshRef}
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
+        onClick={() => onAgentClick(agent)}
       >
         <sphereGeometry args={[0.4, 16, 16]} />
         <meshStandardMaterial
@@ -224,15 +201,16 @@ function AgentSphere({
 }
 
 // Main 3D scene component
-function Scene({ 
-  documents, 
-  onDocumentHover, 
-  onDocumentClick, 
+function Scene({
+  documents,
+  onDocumentHover,
+  onDocumentClick,
   hoveredDocument,
   searchTerm,
   activeFilters,
   agents,
-  setAgents
+  setAgents,
+  onAgentClick
 }: {
   documents: Document3D[];
   onDocumentHover: (doc: Document3D | null) => void;
@@ -242,6 +220,7 @@ function Scene({
   activeFilters: string[];
   agents: Agent[];
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
+  onAgentClick: (agent: Agent) => void;
 }) {
   // Filter and highlight logic
   const processedDocuments = useMemo(() => {
@@ -287,6 +266,7 @@ function Scene({
           key={agent.id}
           agent={agent}
           setAgents={setAgents}
+          onAgentClick={onAgentClick}
         />
       ))}
       
@@ -336,7 +316,7 @@ function use3DDocuments() {
         type: doc.type,
         fileType: doc.fileType,
         position: doc.position as [number, number, number],
-        color: getDocumentColorByType(doc.fileType || doc.type),
+        color: '#ffffff',
         size: Math.max(0.2, Math.min(0.8, (doc.chunkCount || 1) / 50)), // Size based on chunk count
         dateAdded: doc.dateAdded,
         status: doc.status,
@@ -361,31 +341,20 @@ function use3DDocuments() {
 }
 
 // Helper function to get colors by document type
-function getDocumentColorByType(type: string): string {
-  const colors = {
-    'PDF': '#e74c3c',
-    'DOCX': '#3498db', 
-    'TXT': '#2ecc71',
-    'WEB': '#f39c12',
-    'Pasted Text': '#9b59b6',
-    'Web Page': '#f39c12',
-    'Document': '#8e44ad',
-    'default': '#95a5a6'
-  };
-  return colors[type as keyof typeof colors] || colors.default;
-}
 
 // Main DocumentCloud3D component
-export default function DocumentCloud3D({ 
+export default function DocumentCloud3D({
   documents = [],
   onDocumentSelect,
   agents = [],
-  setAgents
+  setAgents,
+  onAgentSelect
 }: {
   documents?: Document[];
   onDocumentSelect?: (doc: Document3D) => void;
   agents?: Agent[];
   setAgents?: React.Dispatch<React.SetStateAction<Agent[]>>;
+  onAgentSelect?: (agent: Agent) => void;
 }) {
   const [hoveredDocument, setHoveredDocument] = useState<Document3D | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -394,16 +363,12 @@ export default function DocumentCloud3D({
   // Fetch real 3D document data
   const { documents3D: realDocuments3D, loading, error } = use3DDocuments();
 
-  // Generate document colors based on type/category
-  const getDocumentColor = (doc: Document): string => {
-    return getDocumentColorByType(doc.fileType || doc.type);
-  };
 
   // Use real 3D data if available, otherwise fall back to converted documents
   const documents3D = useMemo(() => {
     // If we have real 3D data, use it
     if (realDocuments3D.length > 0) {
-      return realDocuments3D;
+      return realDocuments3D.map(doc => ({ ...doc, color: '#ffffff' }));
     }
 
     // Otherwise, convert regular documents if available
@@ -419,7 +384,7 @@ export default function DocumentCloud3D({
           (Math.random() - 0.5) * 10,
           (Math.random() - 0.5) * 15
         ] as [number, number, number],
-        color: getDocumentColor(doc),
+        color: '#ffffff',
         size: 0.2 + Math.random() * 0.3,
         dateAdded: doc.dateAdded,
         status: (doc.status === 'Ready' || doc.status === 'Processing' || doc.status === 'Error') 
@@ -477,7 +442,7 @@ export default function DocumentCloud3D({
     <div className="w-full h-full relative">
       <Canvas
         camera={{ position: [10, 5, 10], fov: 75 }}
-        className="bg-gradient-to-b from-gray-900 to-black"
+        className="bg-black"
       >
         <Scene
           documents={documents3D}
@@ -488,6 +453,7 @@ export default function DocumentCloud3D({
           activeFilters={activeFilters}
           agents={agents}
           setAgents={setAgents || (() => {})}
+          onAgentClick={onAgentSelect || (() => {})}
         />
       </Canvas>
 
