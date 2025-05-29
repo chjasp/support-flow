@@ -39,7 +39,7 @@ const ChatSidebar = forwardRef<ChatSidebarHandle>((_, ref) => {
         setChatId(currentChatId);
       }
 
-      const res = await fetch(`/api/chats/${currentChatId}/messages`, {
+      const res = await fetch(`/api/chat/${currentChatId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: trimmed }),
@@ -72,34 +72,43 @@ const ChatSidebar = forwardRef<ChatSidebarHandle>((_, ref) => {
   return (
     <>
       <div
-        className={`fixed top-14 right-0 h-[calc(100vh-theme(spacing.14))] w-80 bg-background border-l shadow-lg transition-transform ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed top-14 right-0 h-[calc(100vh-theme(spacing.14))] w-96 bg-background border-l shadow-lg transition-transform ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
       >
-        <ScrollArea className="h-full p-4 space-y-2">
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={`text-sm ${m.sender === 'user' ? 'text-right' : 'text-left'}`}
-            >
+        <ScrollArea className="h-full p-4">
+          <div className="space-y-4">
+            {messages.map((m) => (
               <div
-                className={`inline-block px-3 py-2 rounded-lg ${m.sender === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}
+                key={m.id}
+                className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                {m.text}
+                <div
+                  className={`px-3 py-2 rounded-lg break-words overflow-wrap-anywhere whitespace-pre-wrap text-sm leading-relaxed ${
+                    m.sender === 'user' 
+                      ? 'bg-primary text-primary-foreground max-w-[90%]' 
+                      : 'bg-muted max-w-[95%]'
+                  }`}
+                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                >
+                  {m.text}
+                </div>
               </div>
-            </div>
-          ))}
-          {isLoading && (
-            <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Thinking...</span>
-            </div>
-          )}
+            ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="flex items-center space-x-2 text-sm text-muted-foreground bg-muted px-3 py-2 rounded-lg">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Thinking...</span>
+                </div>
+              </div>
+            )}
+          </div>
         </ScrollArea>
       </div>
       <button
         onClick={() => setIsOpen((o) => !o)}
         className={`fixed top-1/2 transform -translate-y-1/2 bg-background border border-r-0 rounded-l-md px-3 py-2 text-sm shadow-lg hover:bg-muted transition-all duration-200 z-50 ${
           isOpen 
-            ? 'right-80 border-l' 
+            ? 'right-96 border-l' 
             : 'right-0 border-l-0'
         }`}
       >

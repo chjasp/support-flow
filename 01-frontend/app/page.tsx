@@ -252,7 +252,7 @@ export default function HomePage() {
         <select
           value={activeAgentId}
           onChange={(e) => setActiveAgentId(e.target.value)}
-          className="bg-gray-800 text-white px-2 py-1 rounded-md"
+          className="flex h-9 w-[100px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
           {agents.map((agent) => (
             <option key={agent.id} value={agent.id}>
