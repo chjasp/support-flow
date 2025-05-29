@@ -4,6 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 
 export interface ChatSidebarHandle {
   sendMessage: (text: string) => void;
+  toggle: () => void;
 }
 
 type Message = { id: string; text: string; sender: 'user' | 'bot' };
@@ -62,7 +63,11 @@ const ChatSidebar = forwardRef<ChatSidebarHandle>((_, ref) => {
     }
   };
 
-  useImperativeHandle(ref, () => ({ sendMessage }));
+  const toggle = () => {
+    setIsOpen((prev) => !prev);
+  };
+
+  useImperativeHandle(ref, () => ({ sendMessage, toggle }));
 
   return (
     <>
