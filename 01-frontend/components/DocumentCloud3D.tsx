@@ -139,6 +139,12 @@ function AgentSphere({
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
+  const toolsRef = useRef<THREE.Group>(null);
+
+  const toolIcons = useMemo(
+    () => ["🌐", "🧮", "⚡", "🔗"],
+    []
+  );
 
   // Animate the agent sphere
   useFrame((state) => {
@@ -169,6 +175,10 @@ function AgentSphere({
         meshRef.current.scale.setScalar(hovered ? 1.2 : 1);
       }
     }
+
+    if (toolsRef.current) {
+      toolsRef.current.rotation.y += 0.01;
+    }
   });
 
   return (
@@ -187,7 +197,28 @@ function AgentSphere({
           opacity={1}
         />
       </mesh>
-      
+
+      {/* Tool icons orbiting the agent */}
+      <group ref={toolsRef}>
+        {toolIcons.map((icon, idx) => {
+          const angle = (idx / toolIcons.length) * Math.PI * 2;
+          const radius = 0.8;
+          const x = Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius;
+          return (
+            <Html
+              key={idx}
+              position={[x, 0, z]}
+              center
+            >
+              <div className="text-xl select-none">
+                {icon}
+              </div>
+            </Html>
+          );
+        })}
+      </group>
+
       {/* Agent label */}
       {hovered && (
         <Html center>
