@@ -39,7 +39,7 @@ const ChatSidebar = forwardRef<ChatSidebarHandle>((_, ref) => {
         setChatId(currentChatId);
       }
 
-      const res = await fetch(`/api/chats/${currentChatId}`, {
+      const res = await fetch(`/api/chats/${currentChatId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: trimmed }),
@@ -97,9 +97,13 @@ const ChatSidebar = forwardRef<ChatSidebarHandle>((_, ref) => {
       </div>
       <button
         onClick={() => setIsOpen((o) => !o)}
-        className="fixed top-1/2 right-0 transform -translate-y-1/2 translate-x-full bg-muted border-l rounded-l px-2 py-1 text-sm shadow"
+        className={`fixed top-1/2 transform -translate-y-1/2 bg-background border border-r-0 rounded-l-md px-3 py-2 text-sm shadow-lg hover:bg-muted transition-all duration-200 z-50 ${
+          isOpen 
+            ? 'right-80 border-l' 
+            : 'right-0 border-l-0'
+        }`}
       >
-        {isOpen ? '➤' : '◀'}
+        {isOpen ? '→' : '←'}
       </button>
     </>
   );

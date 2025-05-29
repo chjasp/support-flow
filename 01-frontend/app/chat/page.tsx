@@ -48,7 +48,7 @@ const TYPING_INTERVAL_MS = 3;
 
 const CHATS_ENDPOINT = '/api/chats';
 const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
-const postMessageEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
+const postMessageEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
 const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
 
 /* -------------------------------------------------------------------------- */
