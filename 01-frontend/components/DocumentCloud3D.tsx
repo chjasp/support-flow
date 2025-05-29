@@ -5,6 +5,7 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useSession } from 'next-auth/react';
+import { Globe, Calculator, Zap, Link, BarChart } from 'lucide-react';
 
 // Document interface matching the knowledge base
 interface Document {
@@ -137,25 +138,30 @@ function AgentSphere({
   setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
   onAgentClick: (agent: Agent) => void;
 }) {
+  const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
-  const [hovered, setHovered] = useState(false);
   const toolsRef = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
 
-  const toolIcons = useMemo(
-    () => ["🌐", "🧮", "⚡", "🔗"],
-    []
-  );
+  // Tool icons that orbit around the agent
+  const toolIcons = [
+    { icon: Globe, name: 'Web Search' },
+    { icon: Calculator, name: 'Calculator' }, 
+    { icon: Zap, name: 'Code Execution' },
+    { icon: Link, name: 'External APIs' },
+    { icon: BarChart, name: 'Data Analysis' }
+  ];
 
   // Animate the agent sphere
   useFrame((state) => {
-    if (meshRef.current) {
-      // Smooth movement towards target position
+    if (groupRef.current) {
+      // Smooth movement towards target position - apply to the entire group
       const currentPos = new THREE.Vector3(...agent.position);
       const targetPos = new THREE.Vector3(...agent.targetPosition);
       
       // Lerp towards target position
       const lerpedPos = currentPos.lerp(targetPos, 0.02);
-      meshRef.current.position.copy(lerpedPos);
+      groupRef.current.position.copy(lerpedPos);
       
       // Update agent position in state
       setAgents(prev => prev.map(a => 
@@ -163,9 +169,11 @@ function AgentSphere({
           ? { ...a, position: [lerpedPos.x, lerpedPos.y, lerpedPos.z] }
           : a
       ));
-      
-      // Gentle floating animation
-      meshRef.current.position.y += Math.sin(state.clock.elapsedTime * 2 + agent.position[0]) * 0.05;
+    }
+
+    if (meshRef.current) {
+      // Gentle floating animation - only apply to the mesh, relative to group position
+      meshRef.current.position.y = Math.sin(state.clock.elapsedTime * 2 + agent.position[0]) * 0.05;
       
       // Pulsing animation when moving
       if (agent.status === 'moving') {
@@ -182,7 +190,7 @@ function AgentSphere({
   });
 
   return (
-    <group>
+    <group ref={groupRef} position={agent.position}>
       <mesh
         ref={meshRef}
         onPointerOver={() => setHovered(true)}
@@ -200,19 +208,20 @@ function AgentSphere({
 
       {/* Tool icons orbiting the agent */}
       <group ref={toolsRef}>
-        {toolIcons.map((icon, idx) => {
+        {toolIcons.map((toolItem, idx) => {
           const angle = (idx / toolIcons.length) * Math.PI * 2;
           const radius = 0.8;
           const x = Math.cos(angle) * radius;
           const z = Math.sin(angle) * radius;
+          const IconComponent = toolItem.icon;
           return (
             <Html
               key={idx}
               position={[x, 0, z]}
               center
             >
-              <div className="text-xl select-none">
-                {icon}
+              <div style={{ color: agent.color }}>
+                <IconComponent size={16} />
               </div>
             </Html>
           );

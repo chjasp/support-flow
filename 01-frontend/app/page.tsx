@@ -32,7 +32,7 @@ interface Document {
 interface Document3D {
   id: string;
   name: string;
-  type: 'Document' | 'Pasted Text';
+  type: 'Document' | 'Pasted Text' | 'Web Page';
   fileType?: string;
   position: [number, number, number];
   color: string;
@@ -239,6 +239,7 @@ export default function HomePage() {
         onDocumentSelect={handleDocumentSelect}
         agents={agents}
         setAgents={setAgents}
+        onAgentSelect={(agent) => setActiveAgentId(agent.id)}
       />
 
       {/* Agent interaction bar */}
