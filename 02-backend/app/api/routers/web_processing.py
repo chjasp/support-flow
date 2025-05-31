@@ -1,11 +1,13 @@
 import logging
 import requests
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request, Query
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, HttpUrl, ValidationError
+import datetime
 
-from app.api.deps import get_cloudsql_repo
+from app.api.deps import get_cloudsql_repo, get_pocketflow_service
 from app.services.cloudsql import CloudSqlRepository
+from app.services.pocketflow_service import PocketFlowService
 from app.api.auth import verify_token
 from app.config import get_settings
 
@@ -66,17 +68,22 @@ def call_processing_service(urls: List[str]) -> Dict[str, Any]:
 async def process_urls(
     request_obj: Request,
     background_tasks: BackgroundTasks,
-    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo)
+    use_pocketflow: bool = Query(True, description="Use PocketFlow pipeline (recommended)"),
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+    pocketflow_service: PocketFlowService = Depends(get_pocketflow_service)
 ):
     """
     Process a list of URLs for both RAG and 3D visualization.
     This endpoint triggers background processing and returns immediately.
+    
+    Now supports both PocketFlow (recommended) and legacy processing service.
     """
     # ===== LOGGING POINT 1: Raw Request Details =====
     logging.info("===== BACKEND URL PROCESSING DEBUG =====")
     logging.info(f"Request method: {request_obj.method}")
     logging.info(f"Request URL: {request_obj.url}")
     logging.info(f"Request headers: {dict(request_obj.headers)}")
+    logging.info(f"Using PocketFlow: {use_pocketflow}")
     
     # Get the raw body for debugging
     body = await request_obj.body()
@@ -130,35 +137,78 @@ async def process_urls(
         'status': 'processing',
         'urls': url_strings,
         'description': request.description,
-        'created_at': str(datetime.utcnow())
+        'use_pocketflow': use_pocketflow,
+        'created_at': str(datetime.datetime.utcnow())
     }
     
     # Add background task
-    background_tasks.add_task(process_urls_background, task_id, url_strings)
+    if use_pocketflow:
+        background_tasks.add_task(
+            process_urls_background_pocketflow, 
+            task_id, url_strings, request.description, pocketflow_service
+        )
+    else:
+        background_tasks.add_task(
+            process_urls_background_legacy, 
+            task_id, url_strings
+        )
     
     return ProcessingResponse(
         task_id=task_id,
         status="processing",
-        message=f"Started processing {len(url_strings)} URLs"
+        message=f"Started processing {len(url_strings)} URLs using {'PocketFlow' if use_pocketflow else 'legacy service'}"
     )
 
-async def process_urls_background(task_id: str, urls: List[str]):
-    """Background task to process URLs."""
+async def process_urls_background_pocketflow(
+    task_id: str, 
+    urls: List[str], 
+    description: str,
+    pocketflow_service: PocketFlowService
+):
+    """Background task to process URLs using PocketFlow."""
     try:
-        result = call_processing_service(urls)
+        logging.info(f"Processing task {task_id} with PocketFlow: {len(urls)} URLs")
+        
+        result = await pocketflow_service.process_urls_background(urls, description)
+        
         processing_tasks[task_id].update({
             'status': 'completed',
             'result': result,
-            'completed_at': str(datetime.utcnow())
+            'completed_at': str(datetime.datetime.utcnow())
         })
-        logging.info(f"Task {task_id} completed successfully")
+        
+        logging.info(f"PocketFlow task {task_id} completed successfully: {result['processing_stats']}")
+        
     except Exception as e:
         processing_tasks[task_id].update({
             'status': 'failed',
             'error': str(e),
-            'completed_at': str(datetime.utcnow())
+            'completed_at': str(datetime.datetime.utcnow())
         })
-        logging.error(f"Task {task_id} failed: {e}")
+        logging.error(f"PocketFlow task {task_id} failed: {e}", exc_info=True)
+
+async def process_urls_background_legacy(task_id: str, urls: List[str]):
+    """Background task to process URLs using legacy processing service."""
+    try:
+        logging.info(f"Processing task {task_id} with legacy service: {len(urls)} URLs")
+        
+        result = call_processing_service(urls)
+        
+        processing_tasks[task_id].update({
+            'status': 'completed',
+            'result': result,
+            'completed_at': str(datetime.datetime.utcnow())
+        })
+        
+        logging.info(f"Legacy task {task_id} completed successfully")
+        
+    except Exception as e:
+        processing_tasks[task_id].update({
+            'status': 'failed',
+            'error': str(e),
+            'completed_at': str(datetime.datetime.utcnow())
+        })
+        logging.error(f"Legacy task {task_id} failed: {e}")
 
 @router.get("/tasks/{task_id}")
 async def get_task_status(task_id: str):
@@ -198,33 +248,24 @@ async def get_google_cloud_urls():
         "https://cloud.google.com/vertex-ai/docs/tutorials/text-classification-automl",
         "https://cloud.google.com/bigquery/docs/quickstarts/load-data-console",
         "https://cloud.google.com/kubernetes-engine/docs/quickstart",
-        "https://cloud.google.com/functions/docs/quickstart-python",
         "https://cloud.google.com/sql/docs/mysql/quickstart",
-        "https://cloud.google.com/firestore/docs/quickstart-servers",
-        "https://cloud.google.com/pubsub/docs/quickstart-console",
-        "https://cloud.google.com/iam/docs/understanding-roles",
-        "https://cloud.google.com/security/security-design",
-        "https://cloud.google.com/architecture/framework",
-        "https://cloud.google.com/docs/security/best-practices"
+        "https://cloud.google.com/functions/docs/quickstart-console",
+        "https://cloud.google.com/firestore/docs/quickstart-servers"
     ]
     
     return {
         "urls": urls,
-        "count": len(urls),
-        "description": "Curated Google Cloud documentation URLs for processing"
+        "description": "Google Cloud documentation URLs for testing"
     }
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
-    """Delete a completed or failed task from memory."""
-    if task_id not in processing_tasks:
+    """Delete a processing task from memory."""
+    if task_id in processing_tasks:
+        del processing_tasks[task_id]
+        return {"message": "Task deleted"}
+    else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
-        )
-    
-    del processing_tasks[task_id]
-    return {"message": "Task deleted successfully"}
-
-# Import datetime here to avoid circular imports
-from datetime import datetime 
+        ) 

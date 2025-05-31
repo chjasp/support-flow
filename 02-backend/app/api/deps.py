@@ -126,15 +126,5 @@ def get_pipeline(
     # Pass all required dependencies to the constructor
     return DocumentPipeline(settings=settings, repo=repo, llm_service=llm_service, sql_repo=sql_repo)
 
-@lru_cache()
-def get_enhanced_pipeline() -> EnhancedDocumentPipeline:
-    """Provides an EnhancedDocumentPipeline instance."""
-    logging.info("Creating EnhancedDocumentPipeline instance...")
-    repo = get_repo()
-    llm_service = get_llm_service()
-    sql_repo = get_cloudsql_repo()
-    from app.services.enhanced_pipeline import EnhancedDocumentPipeline
-    return EnhancedDocumentPipeline(settings, repo, llm_service, sql_repo)
-
 
 

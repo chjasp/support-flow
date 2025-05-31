@@ -3,10 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List
 from collections import OrderedDict
 
-from app.api.deps import get_repo, get_pipeline, get_enhanced_pipeline
+from app.api.deps import get_repo, get_pipeline
 from app.services.firestore import FirestoreRepository, _DEFAULT_CHAT_TITLE, NotFound
 from app.services.pipeline import DocumentPipeline
-from app.services.enhanced_pipeline import EnhancedDocumentPipeline
 from app.models.domain import (
     QueryRequest,
     # QueryResponse, # No longer used here
@@ -96,34 +95,30 @@ async def post_message_to_chat(
     body: QueryRequest,
     chat_id: str = Path(..., title="The ID of the chat session"),
     repo: FirestoreRepository = Depends(get_repo),
-    enhanced_pipeline: EnhancedDocumentPipeline = Depends(get_enhanced_pipeline),
-    fallback_pipeline: DocumentPipeline = Depends(get_pipeline)
+    pipeline: DocumentPipeline = Depends(get_pipeline)
 ):
     """
-    Sends a user message to a chat, generates a bot response using enhanced RAG,
-    saves both messages, updates chat metadata, and returns both saved messages.
+    Sends a user message to a chat, generates a bot response using RAG,
+    saves both messages, updates chat metadata (including title if needed via repo method),
+    and returns both saved messages.
     """
     try:
         # 1. Save User Message
+        # The add_message_to_chat method now handles the title update internally.
         user_message_to_save = ChatMessage(text=body.query, sender="user")
         saved_user_message = repo.add_message_to_chat(chat_id, user_message_to_save)
 
-        # 2. Perform Enhanced RAG Pipeline
-        logging.info(f"Performing enhanced RAG for chat {chat_id} with query: '{body.query[:50]}...'")
-        
-        try:
-            # Try enhanced pipeline first
-            context_chunks = await enhanced_pipeline.hybrid_search_enhanced(body.query)
-            answer = await enhanced_pipeline.answer_enhanced(body.query, context_chunks)
-        except Exception as e:
-            logging.warning(f"Enhanced pipeline failed, falling back to standard pipeline: {e}")
-            # Fallback to standard pipeline
-            context_chunks = await fallback_pipeline.hybrid_search(body.query)
-            answer = await fallback_pipeline.answer(body.query, context_chunks)
-            
+        # 2. REMOVED: Title update logic block is no longer needed here.
+        # The logic is now inside repo.add_message_to_chat
+
+
+        # 3. Perform RAG Pipeline
+        logging.info(f"Performing RAG for chat {chat_id} with query: '{body.query[:50]}...'")
+        context_chunks = await pipeline.hybrid_search(body.query)
+        answer = await pipeline.answer(body.query, context_chunks)
         logging.info(f"Generated answer for chat {chat_id}: '{answer[:50]}...'")
 
-        # 3. Build the distinct document list
+        # 4. Build the distinct document list
         unique_docs = OrderedDict()
         for c in context_chunks:
             doc_id = c.get("doc_id") or c.get("document_id")
@@ -135,18 +130,21 @@ async def post_message_to_chat(
                 )
         sources = list(unique_docs.values())
 
-        # 4. Save Bot Message
+        # 5. Save Bot Message
         bot_message_to_save = ChatMessage(text=answer, sender="bot", sources=sources)
+        # Note: add_message_to_chat only updates title on USER messages
         saved_bot_message = repo.add_message_to_chat(chat_id, bot_message_to_save)
 
-        # 5. Return the response
+        # 6. Prepare and Return the New Response Model
         return PostMessageResponse(
             user_message=saved_user_message,
             bot_message=saved_bot_message
         )
 
     except NotFound as e:
+        # Catch specific NotFound from repo methods
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         logging.error(f"Error processing message for chat {chat_id}: {e}", exc_info=True)
+        # Provide a more generic error detail to the client
         raise HTTPException(status_code=500, detail="Failed to process message due to an internal error.")
