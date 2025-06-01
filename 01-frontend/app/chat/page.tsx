@@ -16,6 +16,8 @@ import { Loader2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { useSession } from "next-auth/react";
+import { authFetch } from "@/lib/authFetch";
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -57,6 +59,7 @@ const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
 /* -------------------------------------------------------------------------- */
 
 export default function ChatPage() {
+  const { data: session } = useSession();
   /* ------------------------------- State ---------------------------------- */
   const [inputValue, setInputValue] = useState("");
 
@@ -124,7 +127,7 @@ export default function ChatPage() {
       setCurrentMessages([]);
 
       try {
-        const res = await fetch(getMessagesEndpoint(chatId));
+        const res = await authFetch(session, getMessagesEndpoint(chatId));
 
         if (!res.ok) {
           if (res.status === 404) {
@@ -161,7 +164,7 @@ export default function ChatPage() {
       setIsFetchingChats(true);
 
       try {
-        const res = await fetch(CHATS_ENDPOINT);
+        const res = await authFetch(session, CHATS_ENDPOINT);
         if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
 
         const chats: ChatMetadata[] = await res.json();
@@ -194,7 +197,7 @@ export default function ChatPage() {
     setIsCreatingChat(true);
 
     try {
-      const res = await fetch(CHATS_ENDPOINT, { method: "POST" });
+      const res = await authFetch(session, CHATS_ENDPOINT, { method: "POST" });
       if (!res.ok) throw new Error(`Failed to create chat: ${res.statusText}`);
 
       const {
@@ -247,7 +250,7 @@ export default function ChatPage() {
 
     setIsDeletingChat(true);
     try {
-      const res = await fetch(deleteChatEndpoint(chatId), { method: "DELETE" });
+      const res = await authFetch(session, deleteChatEndpoint(chatId), { method: "DELETE" });
 
       if (!res.ok) {
         const errText = await res.text();
@@ -331,7 +334,7 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      const res = await fetch(postMessageEndpoint(activeChatId), {
+      const res = await authFetch(session, postMessageEndpoint(activeChatId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
