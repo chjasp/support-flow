@@ -227,6 +227,10 @@ resource "google_cloud_run_v2_service" "document-ingester" {
         name  = "GEMINI_MODEL"
         value = var.gemini_model
       }
+      env {
+        name  = "CONTENT_PROCESSING_TOPIC"
+        value = google_pubsub_topic.content_processing.name
+      }
 
       volume_mounts {
         name       = "cloudsql"
@@ -433,6 +437,75 @@ resource "google_pubsub_topic_iam_member" "pubsub_dlq_publisher" {
 
   depends_on = [google_pubsub_topic.dlq_topic]
 }
+
+# ---------- Unified Content Processing Pub/Sub Infrastructure -----------
+
+# Topic for URL and text content processing requests
+resource "google_pubsub_topic" "content_processing" {
+  project = var.project_id
+  name    = "content-processing-topic"
+}
+
+# Subscription for content processing (push to Cloud Run)
+resource "google_pubsub_subscription" "content_processing" {
+  project = var.project_id
+  name    = "content-processing-subscription"
+  topic   = google_pubsub_topic.content_processing.id
+
+  ack_deadline_seconds = 600 # 10 minutes for processing
+  message_retention_duration = "604800s" # 7 days
+
+  push_config {
+    push_endpoint = "${google_cloud_run_v2_service.document-ingester.uri}/process-content"
+    
+    # Authentication for push endpoint
+    oidc_token {
+      service_account_email = google_service_account.ingester.email
+    }
+  }
+
+  # Configure retry policy
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
+  }
+
+  # Configure dead letter policy to use our existing DLQ
+  dead_letter_policy {
+    dead_letter_topic = google_pubsub_topic.dlq_topic.id
+    max_delivery_attempts = 5
+  }
+
+  depends_on = [
+    google_pubsub_topic.content_processing,
+    google_cloud_run_v2_service.document-ingester,
+    google_pubsub_topic.dlq_topic
+  ]
+}
+
+# Grant ingester service account permission to publish to content processing topic
+resource "google_pubsub_topic_iam_member" "content_processing_publisher" {
+  project = google_pubsub_topic.content_processing.project
+  topic   = google_pubsub_topic.content_processing.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${google_service_account.ingester.email}"
+
+  depends_on = [google_pubsub_topic.content_processing]
+}
+
+# Grant Pub/Sub service account permission to invoke the Cloud Run service
+resource "google_cloud_run_v2_service_iam_member" "pubsub_invoker" {
+  project  = google_cloud_run_v2_service.document-ingester.project
+  location = google_cloud_run_v2_service.document-ingester.location
+  name     = google_cloud_run_v2_service.document-ingester.name
+
+  role   = "roles/run.invoker"
+  member = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+  depends_on = [google_cloud_run_v2_service.document-ingester]
+}
+
+# -----------------------------------------------------------------------
 
 
 # ───────────────────────────────────────────────

@@ -150,3 +150,54 @@ class PostMessageResponse(BaseModel):
         json_encoders = {
             datetime.datetime: lambda dt: dt.isoformat() if dt else None
         }
+
+# --- Unified Content Processing Models ---
+class ContentProcessingTask(BaseModel):
+    task_id: str
+    task_type: Literal["url_processing", "text_processing", "file_processing"]
+    status: Literal["queued", "processing", "completed", "failed"]
+    input_data: Dict
+    result_data: Optional[Dict] = None
+    error_message: Optional[str] = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    completed_at: Optional[datetime.datetime] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime.datetime: lambda dt: dt.isoformat() if dt else None
+        }
+
+class UrlProcessingRequest(BaseModel):
+    urls: List[str]
+    description: str = ""
+
+class TextProcessingRequest(BaseModel):
+    content: str
+    title: str
+    content_type: str = "text/plain"
+
+class ProcessingTaskResponse(BaseModel):
+    task_id: str
+    status: str
+    message: str
+    created_at: str
+
+class ProcessingTaskStatus(BaseModel):
+    task_id: str
+    task_type: str
+    status: str
+    input_data: Dict
+    result_data: Optional[Dict] = None
+    error_message: Optional[str] = None
+    created_at: str
+    updated_at: str
+    completed_at: Optional[str] = None
+
+# --- Pub/Sub Message Models ---
+class ContentProcessingMessage(BaseModel):
+    task_id: str
+    task_type: Literal["url_processing", "text_processing", "file_processing"]
+    input_data: Dict
+    metadata: Optional[Dict] = None

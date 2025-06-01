@@ -1,15 +1,19 @@
 import logging
-import requests
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, HttpUrl, ValidationError
+from pydantic import BaseModel, ValidationError
 import datetime
+import uuid
 
-from app.api.deps import get_cloudsql_repo, get_pocketflow_service
+from app.api.deps import get_cloudsql_repo
 from app.services.cloudsql import CloudSqlRepository
-from app.services.pocketflow_service import PocketFlowService
+from app.services.pubsub_service import get_pubsub_service, PubSubService
 from app.api.auth import verify_token
 from app.config import get_settings
+from app.models.domain import (
+    UrlProcessingRequest, ProcessingTaskResponse, ProcessingTaskStatus,
+    TextProcessingRequest
+)
 
 router = APIRouter(
     prefix="/web",
@@ -29,6 +33,7 @@ class ProcessingResponse(BaseModel):
     status: str
     message: str
 
+# Pydantic models for 3D visualization
 class Document3DResponse(BaseModel):
     """Representation of a document with 3D coordinates for the frontend."""
 
@@ -42,48 +47,21 @@ class Document3DResponse(BaseModel):
     chunkCount: int
     url: Optional[str] = None
 
-# In-memory task tracking (in production, use Redis or database)
-processing_tasks = {}
-
-def call_processing_service(urls: List[str]) -> Dict[str, Any]:
-    """Call the processing service to handle URL processing."""
-    processing_url = settings.processing_service_url
-    
-    try:
-        response = requests.post(
-            f"{processing_url}/process-urls",
-            json={"urls": urls},
-            timeout=300  # 5 minute timeout
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logging.error(f"Error calling processing service: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Processing service unavailable"
-        )
-
-@router.post("/process-urls", response_model=ProcessingResponse)
+@router.post("/process-urls", response_model=ProcessingTaskResponse)
 async def process_urls(
     request_obj: Request,
-    background_tasks: BackgroundTasks,
-    use_pocketflow: bool = Query(True, description="Use PocketFlow pipeline (recommended)"),
     sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
-    pocketflow_service: PocketFlowService = Depends(get_pocketflow_service)
+    pubsub_service: PubSubService = Depends(get_pubsub_service)
 ):
     """
-    Process a list of URLs for both RAG and 3D visualization.
-    This endpoint triggers background processing and returns immediately.
-    
-    Now supports both PocketFlow (recommended) and legacy processing service.
+    Process a list of URLs using unified event-driven architecture.
+    This endpoint publishes URL processing tasks to Pub/Sub for consistent processing.
     """
     # ===== LOGGING POINT 1: Raw Request Details =====
     logging.info("===== BACKEND URL PROCESSING DEBUG =====")
     logging.info(f"Request method: {request_obj.method}")
     logging.info(f"Request URL: {request_obj.url}")
     logging.info(f"Request headers: {dict(request_obj.headers)}")
-    logging.info(f"Using PocketFlow: {use_pocketflow}")
     
     # Get the raw body for debugging
     body = await request_obj.body()
@@ -97,8 +75,8 @@ async def process_urls(
         
         # ===== LOGGING POINT 2: Pydantic Validation =====
         logging.info("Attempting Pydantic validation...")
-        request = UrlProcessRequest(**body_json)
-        logging.info(f"Pydantic validation successful. URLs: {[str(url) for url in request.urls]}")
+        request = UrlProcessingRequest(**body_json)
+        logging.info(f"Pydantic validation successful. URLs: {request.urls}")
         
     except json.JSONDecodeError as e:
         logging.error(f"JSON parsing failed: {e}")
@@ -127,99 +105,76 @@ async def process_urls(
     
     logging.info("================================")
     
-    import uuid
     task_id = str(uuid.uuid4())
     
-    # Convert HttpUrl objects to strings
-    url_strings = [str(url) for url in request.urls]
-    
-    processing_tasks[task_id] = {
-        'status': 'processing',
-        'urls': url_strings,
-        'description': request.description,
-        'use_pocketflow': use_pocketflow,
-        'created_at': str(datetime.datetime.utcnow())
-    }
-    
-    # Add background task
-    if use_pocketflow:
-        background_tasks.add_task(
-            process_urls_background_pocketflow, 
-            task_id, url_strings, request.description, pocketflow_service
+    try:
+        # Create task record in database
+        task_input_data = {
+            "urls": request.urls,
+            "description": request.description
+        }
+        
+        sql_repo.create_processing_task(
+            task_id=task_id,
+            task_type="url_processing",
+            input_data=task_input_data
         )
-    else:
-        background_tasks.add_task(
-            process_urls_background_legacy, 
-            task_id, url_strings
+        
+        # Publish to Pub/Sub for processing
+        message_id = pubsub_service.publish_url_processing_task(
+            task_id=task_id,
+            urls=request.urls,
+            description=request.description
         )
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="processing",
-        message=f"Started processing {len(url_strings)} URLs using {'PocketFlow' if use_pocketflow else 'legacy service'}"
-    )
+        
+        logging.info(f"Created URL processing task {task_id} with {len(request.urls)} URLs. Message ID: {message_id}")
+        
+        return ProcessingTaskResponse(
+            task_id=task_id,
+            status="queued",
+            message=f"Queued {len(request.urls)} URLs for processing",
+            created_at=datetime.datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to create URL processing task: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue URL processing task: {str(e)}"
+        )
 
-async def process_urls_background_pocketflow(
-    task_id: str, 
-    urls: List[str], 
-    description: str,
-    pocketflow_service: PocketFlowService
+@router.get("/tasks/{task_id}", response_model=ProcessingTaskStatus)
+async def get_task_status(
+    task_id: str,
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo)
 ):
-    """Background task to process URLs using PocketFlow."""
+    """Get the status of a processing task from the database."""
     try:
-        logging.info(f"Processing task {task_id} with PocketFlow: {len(urls)} URLs")
+        task_data = sql_repo.get_processing_task(task_id)
         
-        result = await pocketflow_service.process_urls_background(urls, description)
+        return ProcessingTaskStatus(
+            task_id=task_data["task_id"],
+            task_type=task_data["task_type"],
+            status=task_data["status"],
+            input_data=task_data["input_data"],
+            result_data=task_data["result_data"],
+            error_message=task_data["error_message"],
+            created_at=task_data["created_at"].isoformat() if task_data["created_at"] else "",
+            updated_at=task_data["updated_at"].isoformat() if task_data["updated_at"] else "",
+            completed_at=task_data["completed_at"].isoformat() if task_data["completed_at"] else None
+        )
         
-        processing_tasks[task_id].update({
-            'status': 'completed',
-            'result': result,
-            'completed_at': str(datetime.datetime.utcnow())
-        })
-        
-        logging.info(f"PocketFlow task {task_id} completed successfully: {result['processing_stats']}")
-        
-    except Exception as e:
-        processing_tasks[task_id].update({
-            'status': 'failed',
-            'error': str(e),
-            'completed_at': str(datetime.datetime.utcnow())
-        })
-        logging.error(f"PocketFlow task {task_id} failed: {e}", exc_info=True)
-
-async def process_urls_background_legacy(task_id: str, urls: List[str]):
-    """Background task to process URLs using legacy processing service."""
-    try:
-        logging.info(f"Processing task {task_id} with legacy service: {len(urls)} URLs")
-        
-        result = call_processing_service(urls)
-        
-        processing_tasks[task_id].update({
-            'status': 'completed',
-            'result': result,
-            'completed_at': str(datetime.datetime.utcnow())
-        })
-        
-        logging.info(f"Legacy task {task_id} completed successfully")
-        
-    except Exception as e:
-        processing_tasks[task_id].update({
-            'status': 'failed',
-            'error': str(e),
-            'completed_at': str(datetime.datetime.utcnow())
-        })
-        logging.error(f"Legacy task {task_id} failed: {e}")
-
-@router.get("/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """Get the status of a processing task."""
-    if task_id not in processing_tasks:
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-    
-    return processing_tasks[task_id]
+    except Exception as e:
+        logging.error(f"Error retrieving task {task_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve task status"
+        )
 
 @router.get("/documents-3d", response_model=List[Document3DResponse])
 async def get_documents_3d(
@@ -258,14 +213,52 @@ async def get_google_cloud_urls():
         "description": "Google Cloud documentation URLs for testing"
     }
 
-@router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
-    """Delete a processing task from memory."""
-    if task_id in processing_tasks:
-        del processing_tasks[task_id]
-        return {"message": "Task deleted"}
-    else:
+@router.post("/process-text", response_model=ProcessingTaskResponse)
+async def process_text(
+    request: TextProcessingRequest,
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+    pubsub_service: PubSubService = Depends(get_pubsub_service)
+):
+    """
+    Process text content using unified event-driven architecture.
+    This endpoint publishes text processing tasks to Pub/Sub.
+    """
+    task_id = str(uuid.uuid4())
+    
+    try:
+        # Create task record in database
+        task_input_data = {
+            "content": request.content,
+            "title": request.title,
+            "content_type": request.content_type
+        }
+        
+        sql_repo.create_processing_task(
+            task_id=task_id,
+            task_type="text_processing",
+            input_data=task_input_data
+        )
+        
+        # Publish to Pub/Sub for processing
+        message_id = pubsub_service.publish_text_processing_task(
+            task_id=task_id,
+            content=request.content,
+            title=request.title,
+            content_type=request.content_type
+        )
+        
+        logging.info(f"Created text processing task {task_id} for '{request.title}'. Message ID: {message_id}")
+        
+        return ProcessingTaskResponse(
+            task_id=task_id,
+            status="queued",
+            message=f"Queued text content '{request.title}' for processing",
+            created_at=datetime.datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to create text processing task: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue text processing task: {str(e)}"
         ) 
