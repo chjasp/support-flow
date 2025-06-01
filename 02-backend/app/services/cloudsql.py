@@ -47,6 +47,12 @@ class CloudSqlRepository:
             if conn:
                 conn.close()
                 logging.debug("Cloud SQL connection closed.")
+
+    @contextmanager
+    def get_connection(self) -> Iterator[Any]:
+        """Public wrapper around ``_get_conn`` for external callers."""
+        with self._get_conn() as conn:
+            yield conn
                 
     def _to_pgvector(self, vec: List[float]) -> str:
         # keep it dense → smaller payload, less parsing time
