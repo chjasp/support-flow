@@ -325,7 +325,7 @@ class StoreDatabaseNode(Node):
     def post(self, shared, prep_res, exec_res):
         """Store results in shared."""
         shared["output"]["stored_documents"] = exec_res
-        shared["output"]["doc_ids"] = list(exec_res.keys())
+        shared["output"]["doc_ids"] = [doc["doc_id"] for doc in exec_res.values()]
         
         total_stored = len(exec_res)
         logging.info(f"Successfully stored {total_stored} documents to database")
