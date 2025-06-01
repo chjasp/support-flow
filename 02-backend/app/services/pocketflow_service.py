@@ -32,6 +32,7 @@ class PocketFlowService:
     def _get_db_connection(self):
         """Get database connection for PocketFlow operations."""
         try:
+            # Use the public connection context manager from CloudSqlRepository
             with self.sql_repo.get_connection() as conn:
                 yield conn
         except Exception as e:
