@@ -16,6 +16,7 @@ from app.services.llm_service import LLMService
 from app.services.firestore import FirestoreRepository
 from app.services.pipeline import DocumentPipeline
 from app.services.cloudsql import CloudSqlRepository
+from app.services.pocketflow_service import PocketFlowService
 
 
 # Firestore client (removed unused import)
@@ -127,4 +128,11 @@ def get_pipeline(
     return DocumentPipeline(settings=settings, repo=repo, llm_service=llm_service, sql_repo=sql_repo)
 
 
+@lru_cache()
+def get_pocketflow_service(
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+) -> PocketFlowService:
+    """Provides a PocketFlowService instance."""
+    logging.info("Initializing PocketFlowService...")
+    return PocketFlowService(sql_repo)
 
