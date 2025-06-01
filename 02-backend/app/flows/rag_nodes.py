@@ -83,7 +83,10 @@ class InitialRetrievalNode(Node):
         # Generate query embedding
         query_embedding = get_embedding(query)
         if not query_embedding:
-            return []
+            return {
+                "chunks": [],
+                "query_embedding": []
+            }
         
         # Adjust search parameters based on query type
         if query_type == QueryType.TERRAFORM.value:
@@ -109,12 +112,15 @@ class InitialRetrievalNode(Node):
             )
         
         logging.info(f"Initial retrieval found {len(chunks)} chunks for {query_type} query")
-        return chunks
+        return {
+            "chunks": chunks,
+            "query_embedding": query_embedding
+        }
     
     def post(self, shared, prep_res, exec_res):
         """Store initial retrieval results."""
-        shared["retrieval"]["initial_chunks"] = exec_res
-        shared["retrieval"]["query_embedding"] = get_embedding(prep_res["query"])
+        shared["retrieval"]["initial_chunks"] = exec_res.get("chunks", [])
+        shared["retrieval"]["query_embedding"] = exec_res.get("query_embedding", [])
 
 class RAGAgentNode(Node):
     """
