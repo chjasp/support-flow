@@ -3,12 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List
 
 from app.api.deps import get_repo, get_llm_service
-from app.services.firestore import FirestoreRepository, _DEFAULT_CHAT_TITLE, NotFound
+from app.services.firestore import FirestoreRepository, NotFound
 from app.services.llm_service import LLMService
 from app.models.domain import (
     QueryRequest,
-    # QueryResponse, # No longer used here
-    # Chunk, # No longer used here
     ChatMessage,
     ChatMetadata,
     NewChatResponse,
@@ -32,9 +30,6 @@ async def get_chat_list(repo: FirestoreRepository = Depends(get_repo)):
 async def create_new_chat(repo: FirestoreRepository = Depends(get_repo)):
     """Creates a new, empty chat session."""
     try:
-        # Optionally add an initial bot message here if desired
-        # initial_bot_message = ChatMessage(text="Hello! How can I help you today?", sender="bot")
-        # new_chat_meta = repo.create_chat(initial_message=initial_bot_message)
         new_chat_meta = repo.create_chat()
 
         # Fetch initial messages if any were added (e.g., welcome message)

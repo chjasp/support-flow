@@ -53,7 +53,7 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 genai_client = genai.Client(
     vertexai=True,              # keep routing through Vertex endpoint
     project=PROJECT_ID,
-    location="global",
+    location=LOCATION,
 )
 
 logging.basicConfig(
