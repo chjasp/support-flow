@@ -1,4 +1,4 @@
-import os, uuid, logging
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List
 
@@ -46,7 +46,3 @@ async def delete_single_document(
     except Exception as e:
         logging.error(f"Error deleting document {doc_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete document")
-
-# Note: The GCS event-triggered processing endpoint might NOT need this auth
-# if it's triggered internally. However, if you add manual trigger endpoints,
-# they would need protection.

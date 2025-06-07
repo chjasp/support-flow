@@ -35,7 +35,7 @@ export function MainNav({
             <NavigationMenuItem>
               <NavigationMenuLink asChild>
                 <Link href="/" className={navigationMenuTriggerStyle()}>
-                  Home
+                  Chat
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
@@ -43,13 +43,6 @@ export function MainNav({
               <NavigationMenuLink asChild>
                 <Link href="/knowledge-base" className={navigationMenuTriggerStyle()}>
                   Upload
-                </Link>
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-            <NavigationMenuItem>
-              <NavigationMenuLink asChild>
-                <Link href="/chat" className={navigationMenuTriggerStyle()}>
-                  Chat
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
@@ -70,7 +63,11 @@ export function MainNav({
             </Button>
           </>
         ) : (
-          <Button variant="default" size="sm" onClick={() => signIn("google")}>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => signIn("google", { callbackUrl: "/" })}
+          >
             <LogIn className="mr-2 h-4 w-4" /> Sign In
           </Button>
         )}

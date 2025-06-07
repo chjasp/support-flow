@@ -54,16 +54,6 @@ async def verify_token(
             settings.auth_google_client_id # Crucial: Verify the audience
         )
 
-        # --- Optional: Add more checks if needed ---
-        # Example: Check if the issuer is Google
-        # if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
-        #     raise ValueError('Wrong issuer.')
-
-        # Example: Check if the user's email domain is allowed (if applicable)
-        # allowed_domains = ["yourcompany.com"]
-        # if idinfo.get('hd') not in allowed_domains:
-        #      raise ValueError('Unauthorized domain.')
-
         logging.debug(f"Token verified successfully for email: {idinfo.get('email')}")
         return idinfo # Return the decoded payload (user info)
 
@@ -87,17 +77,3 @@ async def verify_token(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not process authentication token",
         )
-
-# Optional: Dependency to get just the user email easily
-async def get_current_user_email(
-    user_info: dict = Depends(verify_token)
-) -> str:
-    """Extracts user email from verified token payload."""
-    email = user_info.get("email")
-    if not email:
-         logging.error("Email not found in verified token payload.")
-         raise HTTPException(
-             status_code=status.HTTP_401_UNAUTHORIZED,
-             detail="Could not identify user from token.",
-         )
-    return email 

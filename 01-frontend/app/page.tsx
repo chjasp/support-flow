@@ -1,354 +1,580 @@
 "use client";
 
-import { useSession, signIn } from "next-auth/react";
-import { authFetch } from "@/lib/authFetch";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  KeyboardEvent,
+} from "react";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2 } from "lucide-react";
-import { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
-import { format } from "date-fns";
-import DocumentCloud3D from "@/components/DocumentCloud3D";
-import ChatSidebar, { ChatSidebarHandle } from "@/components/ChatSidebar";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Loader2, Trash2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import { useSession } from "next-auth/react";
+import { authFetch } from "@/lib/authFetch";
 
-// Document interface matching the knowledge base
-interface Document {
-  id: string;
-  name: string;
-  type: "Document" | "Pasted Text";
-  fileType?: string;
-  dateAdded: string;
-  status: "Uploading" | "Processing" | "Ready" | "Error" | "Unknown";
-  gcsUri?: string;
-  uploadError?: string;
-}
+/* -------------------------------------------------------------------------- */
+/*                                   Types                                    */
+/* -------------------------------------------------------------------------- */
 
-// 3D Document interface for the selected document
-interface Document3D {
-  id: string;
-  name: string;
-  type: 'Document' | 'Pasted Text' | 'Web Page';
-  fileType?: string;
-  position: [number, number, number];
-  color: string;
-  size: number;
-  content?: string;
-  dateAdded: string;
-  status: 'Ready' | 'Processing' | 'Error';
-}
+type Sender = "user" | "bot";
 
-// Agent interface for autonomous agents
-interface Agent {
+type Message = {
   id: string;
-  name: string;
-  color: string;
-  position: [number, number, number];
-  targetPosition: [number, number, number];
-  status: 'idle' | 'moving' | 'researching' | 'thinking';
-  currentTask?: string;
-  initialPosition: [number, number, number];
-}
+  text: string;
+  sender: Sender;
+  timestamp: string;
+};
+
+type ChatMetadata = {
+  id: string;
+  title: string;
+  lastActivity: string;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                                Const Values                                */
+/* -------------------------------------------------------------------------- */
+
+const MAX_TITLE_LENGTH = 30;
+const TYPING_INTERVAL_MS = 3;
+
+const CHATS_ENDPOINT = '/api/chats';
+const CHAT_ENDPOINT = '/api/chat';
+const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
+const postMessageEndpoint = (chatId: string) => `${CHAT_ENDPOINT}/${chatId}`;
+const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
+
+/* -------------------------------------------------------------------------- */
+/*                               Main Component                               */
+/* -------------------------------------------------------------------------- */
 
 export default function HomePage() {
-  const { data: session, status } = useSession();
-  const [documents, setDocuments] = useState<Document[]>([]);
-  const [selectedDocument, setSelectedDocument] = useState<Document3D | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { data: session } = useSession();
+  /* ------------------------------- State ---------------------------------- */
+  const [inputValue, setInputValue] = useState("");
 
-  // Agent state management
-  const [agents, setAgents] = useState<Agent[]>([
-    {
-      id: 'oli',
-      name: 'Oli',
-      color: '#1FBD54',
-      position: [-8, 2, -8],
-      targetPosition: [-8, 2, -8],
-      status: 'idle',
-      initialPosition: [-8, 2, -8]
-    },
-    {
-      id: 'maxi',
-      name: 'Maxi',
-      color: '#3477F5',
-      position: [0, 2, -10],
-      targetPosition: [0, 2, -10],
-      status: 'idle',
-      initialPosition: [0, 2, -10]
-    },
-    {
-      id: 'jannik',
-      name: 'Jannik',
-      color: '#E74E0F',
-      position: [8, 2, -8],
-      targetPosition: [8, 2, -8],
-      status: 'idle',
-      initialPosition: [8, 2, -8]
-    }
-  ]);
-  const [agentInstruction, setAgentInstruction] = useState('');
-  const [activeAgentId, setActiveAgentId] = useState('maxi');
-  const chatSidebarRef = useRef<ChatSidebarHandle>(null);
+  const [chatList, setChatList] = useState<ChatMetadata[]>([]);
+  const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
 
-  // Fetch documents from the knowledge base
-  const fetchDocuments = useCallback(async () => {
-    if (status !== "authenticated" || !session?.idToken) {
-      return;
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFetchingChats, setIsFetchingChats] = useState(true);
+  const [isFetchingMessages, setIsFetchingMessages] = useState(false);
+  const [isCreatingChat, setIsCreatingChat] = useState(false);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
+
+  /* ------------------------------ Refs ------------------------------------ */
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeTypingMessageId = useRef<string | null>(null);
+
+  /* ------------------------- Derived Booleans ----------------------------- */
+  const interactionDisabled = useMemo(
+    () =>
+      isLoading ||
+      isFetchingMessages ||
+      isFetchingChats ||
+      isCreatingChat ||
+      isDeletingChat ||
+      !!activeTypingMessageId.current,
+    [
+      isLoading,
+      isFetchingMessages,
+      isFetchingChats,
+      isCreatingChat,
+      isDeletingChat,
+    ],
+  );
+
+  /* ------------------------------------------------------------------------ */
+  /*                               Utilities                                  */
+  /* ------------------------------------------------------------------------ */
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior });
+    });
+  };
+
+  const clearTypingEffect = useCallback(() => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
     }
+  }, []);
+
+  /* ------------------------------------------------------------------------ */
+  /*                             Data Fetching                                */
+  /* ------------------------------------------------------------------------ */
+
+  const fetchMessages = useCallback(
+    async (chatId: string) => {
+      if (!chatId) return;
+
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
+      setIsFetchingMessages(true);
+      setCurrentMessages([]);
+
+      try {
+        const res = await authFetch(session, getMessagesEndpoint(chatId));
+
+        if (!res.ok) {
+          if (res.status === 404) {
+            setChatList((prev) => prev.filter((c) => c.id !== chatId));
+            setActiveChatId(null);
+            return;
+          }
+          throw new Error(`Failed to fetch messages: ${res.statusText}`);
+        }
+
+        const data: Message[] = await res.json();
+        data.sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+        );
+        setCurrentMessages(data);
+        scrollToBottom("instant");
+      } catch (err) {
+        if (!(err instanceof Error && err.message.includes("404"))) {
+          console.error("Error fetching messages:", err);
+        }
+      } finally {
+        setIsFetchingMessages(false);
+      }
+    },
+    [clearTypingEffect, session],
+  );
+
+  /* --------------------------- Initial Load ------------------------------- */
+
+  useEffect(() => {
+    const loadInitialChats = async () => {
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
+      setIsFetchingChats(true);
+
+      try {
+        const res = await authFetch(session, CHATS_ENDPOINT);
+        if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
+
+        const chats: ChatMetadata[] = await res.json();
+        setChatList(chats);
+
+        if (chats.length) {
+          setActiveChatId(chats[0].id);
+          await fetchMessages(chats[0].id);
+        } else {
+          await handleNewChat();
+        }
+      } catch (err) {
+        console.error("Error fetching initial chats:", err);
+      } finally {
+        setIsFetchingChats(false);
+      }
+    };
+
+    if (session) {
+      loadInitialChats();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  /* ------------------------------------------------------------------------ */
+  /*                            Chat Operations                               */
+  /* ------------------------------------------------------------------------ */
+
+  const handleNewChat = useCallback(async () => {
+    clearTypingEffect();
+    activeTypingMessageId.current = null;
+    setIsCreatingChat(true);
 
     try {
-      const response = await authFetch(session, '/api/documents');
+      const res = await authFetch(session, CHATS_ENDPOINT, { method: "POST" });
+      if (!res.ok) throw new Error(`Failed to create chat: ${res.statusText}`);
 
-      if (response.ok) {
-        const data: Document[] = await response.json();
-        setDocuments(data.filter(doc => doc.status === 'Ready'));
-      } else {
-        if (response.status !== 401 && response.status !== 403) {
-          console.error('Failed to fetch documents:', response.statusText);
+      const {
+        id,
+        title,
+        messages,
+      }: { id: string; title: string; messages: Message[] } = await res.json();
+
+      const newMeta: ChatMetadata = {
+        id,
+        title,
+        lastActivity: new Date().toISOString(),
+      };
+
+      setChatList((prev) => [newMeta, ...prev]);
+      setActiveChatId(id);
+      setCurrentMessages(messages);
+      setInputValue("");
+      scrollToBottom("instant");
+    } catch (err) {
+      console.error("Error creating new chat:", err);
+    } finally {
+      setIsCreatingChat(false);
+    }
+  }, [clearTypingEffect, session]);
+
+  const handleSelectChat = (chatId: string) => {
+    if (chatId === activeChatId || isDeletingChat) return;
+
+    clearTypingEffect();
+    activeTypingMessageId.current = null;
+    setActiveChatId(chatId);
+    fetchMessages(chatId);
+  };
+
+  const handleDeleteChat = async (chatId: string) => {
+    if (!chatId || isDeletingChat) return;
+
+    if (activeTypingMessageId.current && chatId === activeChatId) {
+      clearTypingEffect();
+      activeTypingMessageId.current = null;
+    }
+
+    setIsDeletingChat(true);
+    try {
+      const res = await authFetch(session, deleteChatEndpoint(chatId), { method: "DELETE" });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Failed to delete chat: ${errText || res.statusText}`);
+      }
+
+      const remaining = chatList.filter((c) => c.id !== chatId);
+      setChatList(remaining);
+
+      if (activeChatId === chatId) {
+        if (remaining.length) {
+          setActiveChatId(remaining[0].id);
+          await fetchMessages(remaining[0].id);
+        } else {
+          setActiveChatId(null);
+          setCurrentMessages([]);
+          await handleNewChat();
         }
       }
-    } catch (error) {
-      console.error('Error fetching documents:', error);
-    }
-  }, [status, session]);
-
-  // Load documents on component mount
-  useEffect(() => {
-    fetchDocuments();
-  }, [fetchDocuments]);
-
-  // Handle document selection from 3D view
-  const handleDocumentSelect = (document: Document3D) => {
-    setSelectedDocument(document);
-    setIsModalOpen(true);
-  };
-
-  // Handle chat with document
-  const handleChatWithDocument = () => {
-    if (selectedDocument) {
-      // Navigate to chat with document context
-      window.location.href = `/chat?document=${selectedDocument.id}`;
+    } catch (err) {
+      console.error("Error deleting chat:", err);
+      alert(
+        `Failed to delete chat: ${err instanceof Error ? err.message : "Unknown"}`,
+      );
+    } finally {
+      setIsDeletingChat(false);
     }
   };
 
+  /* ------------------------------------------------------------------------ */
+  /*                             Message Send                                 */
+  /* ------------------------------------------------------------------------ */
 
-  // Generate random positions for agent movement
-  const generateRandomPositions = (count: number): [number, number, number][] => {
-    const positions: [number, number, number][] = [];
-    for (let i = 0; i < count; i++) {
-      positions.push([
-        (Math.random() - 0.5) * 15,
-        (Math.random() - 0.5) * 8 + 2,
-        (Math.random() - 0.5) * 15
+  const startTypingEffect = useCallback(
+    (messageId: string, fullText: string) => {
+      clearTypingEffect();
+      activeTypingMessageId.current = messageId;
+
+      let idx = 0;
+      const typeStep = () => {
+        if (activeTypingMessageId.current !== messageId) return;
+
+        idx += 1;
+        setCurrentMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, text: fullText.slice(0, idx) } : m,
+          ),
+        );
+        scrollToBottom("smooth");
+
+        if (idx < fullText.length) {
+          typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
+        } else {
+          activeTypingMessageId.current = null;
+          typingTimeoutRef.current = null;
+          scrollToBottom("smooth");
+        }
+      };
+
+      typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
+    },
+    [clearTypingEffect],
+  );
+
+  const handleSendMessage = async () => {
+    const trimmed = inputValue.trim();
+    if (!activeChatId || !trimmed || interactionDisabled) return;
+
+    setInputValue("");
+
+    const optimistic: Message = {
+      id: `temp-${Date.now()}`,
+      text: trimmed,
+      sender: "user",
+      timestamp: new Date().toISOString(),
+    };
+
+    setCurrentMessages((prev) => [...prev, optimistic]);
+    scrollToBottom();
+
+    setIsLoading(true);
+
+    try {
+      const res = await authFetch(session, postMessageEndpoint(activeChatId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: trimmed }),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Backend query failed: ${err || res.statusText}`);
+      }
+
+      const {
+        user_message,
+        bot_message,
+      }: { user_message: Message; bot_message: Message } = await res.json();
+
+      const placeholder: Message = { ...bot_message, text: "" };
+
+      setIsLoading(false);
+      setCurrentMessages((prev) => [
+        ...prev.filter((m) => m.id !== optimistic.id),
+        user_message,
+        placeholder,
       ]);
+      scrollToBottom();
+
+      setTimeout(() => startTypingEffect(bot_message.id, bot_message.text), 50);
+
+      /* ---------------------- Chat list metadata -------------------------- */
+      setChatList((prev) => {
+        const idx = prev.findIndex((c) => c.id === activeChatId);
+        if (idx === -1) return prev;
+
+        const updated = { ...prev[idx] };
+        updated.lastActivity = bot_message.timestamp;
+        if (updated.title === "New Chat") {
+          const newTitle =
+            user_message.text.slice(0, MAX_TITLE_LENGTH) +
+            (user_message.text.length > MAX_TITLE_LENGTH ? "..." : "");
+          updated.title = newTitle;
+        }
+        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      });
+    } catch (err) {
+      console.error("Failed to send message:", err);
+
+      const errorMsg: Message = {
+        id: `error-${Date.now()}`,
+        text: `Sorry, failed to process message. ${
+          err instanceof Error ? err.message : ""
+        }`,
+        sender: "bot",
+        timestamp: new Date().toISOString(),
+      };
+
+      setCurrentMessages((prev) => [
+        ...prev.filter((m) => m.id !== optimistic.id),
+        errorMsg,
+      ]);
+      scrollToBottom();
+      setIsLoading(false);
     }
-    return positions;
   };
 
-  // Start agent task with movement
-  const handleStartAgentTask = (agentId: string) => {
-    if (!agentInstruction.trim()) return;
+  /* ------------------------------------------------------------------------ */
+  /*                             Event Helpers                                */
+  /* ------------------------------------------------------------------------ */
 
-    // Generate 5 random waypoints
-    const waypoints = generateRandomPositions(5);
-
-    // Update agent status and start movement
-    setAgents(prev => prev.map(agent =>
-      agent.id === agentId
-        ? {
-            ...agent,
-            status: 'moving' as const,
-            currentTask: agentInstruction.trim()
-          }
-        : agent
-    ));
-
-    // Start the movement sequence
-    moveAgentThroughWaypoints(agentId, waypoints);
-
-    // Send the instruction to the chat sidebar
-    chatSidebarRef.current?.sendMessage(agentInstruction.trim());
-
-    // Clear input after sending
-    setAgentInstruction('');
+  const handleKeyPress = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!activeTypingMessageId.current) handleSendMessage();
+    }
   };
 
-  // Move agent through waypoints and back to initial position
-  const moveAgentThroughWaypoints = async (agentId: string, waypoints: [number, number, number][]) => {
-    const allWaypoints = [...waypoints];
-    
-    // Add initial position at the end to return
-    const agent = agents.find(a => a.id === agentId);
-    if (agent) {
-      allWaypoints.push(agent.initialPosition);
-    }
+  const activeChatTitle =
+    chatList.find((c) => c.id === activeChatId)?.title ?? "Chat";
 
-    for (let i = 0; i < allWaypoints.length; i++) {
-      const targetPos = allWaypoints[i];
-      
-      // Update target position
-      setAgents(prev => prev.map(a => 
-        a.id === agentId 
-          ? { ...a, targetPosition: targetPos }
-          : a
-      ));
+  /* ------------------------------------------------------------------------ */
+  /*                                 Render                                   */
+  /* ------------------------------------------------------------------------ */
 
-      // Wait for movement (2 seconds per waypoint)
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    // Mark task as complete
-    setAgents(prev => prev.map(a => 
-      a.id === agentId 
-        ? { 
-            ...a, 
-            status: 'idle' as const, 
-            currentTask: undefined,
-            position: a.initialPosition,
-            targetPosition: a.initialPosition
-          }
-        : a
-    ));
-  };
-
-  /* ---------------- loading / auth gates ----------------- */
-  if (status === "loading") {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (status === "unauthenticated") {
-    return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <p className="text-lg mb-4">Please sign in to continue.</p>
-        <Button onClick={() => signIn("google")}>Sign In with Google</Button>
-      </div>
-    );
-  }
-
-  /* --------------------- 3D visualization ---------------------------- */
   return (
-    <div className="absolute inset-0 top-14">
+    <div className="flex h-[calc(100vh-theme(spacing.14)-theme(spacing.6))] border rounded-lg overflow-hidden w-full">
+      {/* ------------------------------ Sidebar ----------------------------- */}
+      <aside className="w-64 md:w-72 border-r flex flex-col bg-muted/30">
+        <div className="p-4 border-b h-16 flex items-center">
+          <h2 className="text-lg font-semibold tracking-tight">Recent Chats</h2>
+        </div>
 
-      {/* 3D Document Visualization */}
-      <DocumentCloud3D
-        documents={documents}
-        onDocumentSelect={handleDocumentSelect}
-        agents={agents}
-        setAgents={setAgents}
-        onAgentSelect={(agent) => setActiveAgentId(agent.id)}
-      />
-
-      {/* Agent interaction bar */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-xl flex items-center gap-2 bg-black/80 text-white p-2 rounded-lg">
-        <select
-          value={activeAgentId}
-          onChange={(e) => setActiveAgentId(e.target.value)}
-          className="flex h-9 w-[100px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.name}
-            </option>
-          ))}
-        </select>
-        <Input
-          placeholder="Ask the agent..."
-          value={agentInstruction}
-          onChange={(e) => setAgentInstruction(e.target.value)}
-          className="flex-1"
-        />
-        <Button
-          size="icon"
-          onClick={() => handleStartAgentTask(activeAgentId)}
-          disabled={!agentInstruction.trim()}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            className="w-5 h-5"
-          >
-            <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
-          </svg>
-          <span className="sr-only">Send</span>
-        </Button>
-      </div>
-
-      {/* Document Details Modal */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>Document Details</DialogTitle>
-            <DialogDescription>
-              Information about the selected document.
-            </DialogDescription>
-          </DialogHeader>
-          {selectedDocument && (
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <span className="text-right font-medium">Name:</span>
-                <span className="col-span-3 font-mono text-sm">{selectedDocument.name}</span>
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <span className="text-right font-medium">Type:</span>
-                <span className="col-span-3">
-                  {selectedDocument.fileType || selectedDocument.type}
-                </span>
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <span className="text-right font-medium">Status:</span>
-                <span className="col-span-3">
-                  <span className={`px-2 py-1 rounded text-xs ${
-                    selectedDocument.status === 'Ready' 
-                      ? 'bg-green-100 text-green-800'
-                      : selectedDocument.status === 'Processing'
-                      ? 'bg-yellow-100 text-yellow-800'
-                      : 'bg-red-100 text-red-800'
-                  }`}>
-                    {selectedDocument.status}
-                  </span>
-                </span>
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <span className="text-right font-medium">Added:</span>
-                <span className="col-span-3">
-                  {format(new Date(selectedDocument.dateAdded), "PPP p")}
-                </span>
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <span className="text-right font-medium">Position:</span>
-                <span className="col-span-3 text-xs font-mono">
-                  ({selectedDocument.position[0].toFixed(2)}, {selectedDocument.position[1].toFixed(2)}, {selectedDocument.position[2].toFixed(2)})
-                </span>
-              </div>
-              
-              {/* Action buttons */}
-              <div className="flex gap-2 mt-4">
-                <Button onClick={handleChatWithDocument} className="flex-1">
-                  💬 Chat about this document
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => window.location.href = '/knowledge-base'}
-                  className="flex-1"
-                >
-                  📁 View in Upload
-                </Button>
-              </div>
+        <ScrollArea className="flex-1 p-2 min-h-0">
+          {isFetchingChats ? (
+            <div className="p-4 text-center text-muted-foreground">
+              Loading chats...
             </div>
+          ) : (
+            <nav className="flex flex-col gap-1">
+              {chatList.map((chat) => (
+                <Button
+                  key={chat.id}
+                  variant="ghost"
+                  className={`justify-start w-full text-left h-auto py-2 px-3 cursor-pointer disabled:cursor-not-allowed ${
+                    chat.id === activeChatId
+                      ? "bg-accent text-accent-foreground"
+                      : ""
+                  }`}
+                  onClick={() => handleSelectChat(chat.id)}
+                  disabled={interactionDisabled}
+                >
+                  <span className="truncate">{chat.title}</span>
+                </Button>
+              ))}
+            </nav>
           )}
-        </DialogContent>
-      </Dialog>
-      <ChatSidebar ref={chatSidebarRef} />
+        </ScrollArea>
+
+        <div className="p-4 border-t mt-auto">
+          <Button
+            className="w-full cursor-pointer disabled:cursor-not-allowed"
+            onClick={handleNewChat}
+            disabled={interactionDisabled}
+          >
+            {isCreatingChat && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            New Chat
+          </Button>
+        </div>
+      </aside>
+
+      {/* --------------------------- Main  Chat ----------------------------- */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <div className="p-4 border-b h-16 flex items-center justify-between bg-background/95">
+          <h1 className="text-xl font-bold tracking-tight truncate mr-2">
+            {activeChatTitle}
+          </h1>
+
+          {activeChatId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => handleDeleteChat(activeChatId)}
+              disabled={interactionDisabled}
+              className="text-muted-foreground hover:text-destructive cursor-pointer disabled:cursor-not-allowed"
+              title="Delete this chat"
+            >
+              {isDeletingChat ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              <span className="sr-only">Delete Chat</span>
+            </Button>
+          )}
+        </div>
+
+        {/* -------------------------- Messages ------------------------------ */}
+        <ScrollArea className="flex-1 p-4 min-h-0" id="message-scroll-area">
+          <div className="space-y-4">
+            {isFetchingMessages && !currentMessages.length && (
+              <div className="flex justify-center items-center p-4">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-muted-foreground">
+                  Loading messages...
+                </span>
+              </div>
+            )}
+
+            {currentMessages.map((m) => (
+              <div
+                key={m.id}
+                className={`flex ${
+                  m.sender === "user" ? "justify-end" : "justify-start"
+                }`}
+              >
+                <div
+                  className={`max-w-[75%] rounded-lg px-4 py-2 ${
+                    m.sender === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted message-reveal"
+                  }`}
+                >
+                  {m.sender === "bot" ? (
+                    <div className="prose dark:prose-invert">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                        rehypePlugins={[rehypeRaw]}
+                        components={{
+                          p: ({ /* node, */ ...props }) => <p className="mb-0" {...props} />,
+                        }}
+                      >
+                        {m.text || ""}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    m.text
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="p-3 max-w-[75%] text-sm rounded-lg bg-muted flex items-center space-x-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Thinking...</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </ScrollArea>
+
+        {/* -------------------------- Input --------------------------------- */}
+        <div className="p-4 border-t bg-background/95">
+          <div className="flex items-center gap-2">
+            <Input
+              type="text"
+              placeholder="Type your message..."
+              className="flex-1"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyPress={handleKeyPress}
+              disabled={interactionDisabled || !activeChatId}
+            />
+
+            <Button
+              size="icon"
+              className="h-9 w-9 cursor-pointer disabled:cursor-not-allowed"
+              onClick={handleSendMessage}
+              disabled={
+                interactionDisabled ||
+                !activeChatId ||
+                !inputValue.trim()
+              }
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="w-5 h-5"
+              >
+                <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+              </svg>
+              <span className="sr-only">Send</span>
+            </Button>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

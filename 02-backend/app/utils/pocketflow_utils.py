@@ -17,14 +17,14 @@ from app.config import get_settings
 settings = get_settings()
 
 # Initialize services
-vertexai.init(project=settings.gcp_project, location=settings.gcp_location)
+vertexai.init(project=settings.gcp_project_id, location=settings.gcp_location)
 genai_client = genai.Client(
     vertexai=True,
-    project=settings.gcp_project,
+    project=settings.gcp_project_id,
     location="global",
 )
 embedding_model = TextEmbeddingModel.from_pretrained(settings.model_embedding)
-storage_client = storage.Client(project=settings.gcp_project)
+storage_client = storage.Client(project=settings.gcp_project_id)
 
 # ================================================================
 # LLM Utilities

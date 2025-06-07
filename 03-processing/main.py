@@ -26,7 +26,6 @@ from vertexai.generative_models import ToolConfig
 from dotenv import load_dotenv
 
 # Import the new scraper
-from scraper import WebDocumentProcessor
 
 load_dotenv()
 
@@ -54,7 +53,7 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 genai_client = genai.Client(
     vertexai=True,              # keep routing through Vertex endpoint
     project=PROJECT_ID,
-    location="global",
+    location=LOCATION,
 )
 
 logging.basicConfig(

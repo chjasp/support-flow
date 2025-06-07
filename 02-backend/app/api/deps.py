@@ -14,7 +14,6 @@ from google.cloud.sql.connector import Connector, IPTypes
 from app.config import get_settings, Settings
 from app.services.llm_service import LLMService
 from app.services.firestore import FirestoreRepository
-from app.services.pipeline import DocumentPipeline
 from app.services.cloudsql import CloudSqlRepository
 from app.services.pocketflow_service import PocketFlowService
 
@@ -22,7 +21,7 @@ from app.services.pocketflow_service import PocketFlowService
 # Firestore client (removed unused import)
 
 # Authentication dependencies
-from .auth import verify_token, get_current_user_email
+from .auth import verify_token
 
 # Service Imports (removed missing RAG service)
 
@@ -89,7 +88,7 @@ async def get_current_user(
 def get_repo() -> FirestoreRepository:
     """Provides a FirestoreRepository instance (now primarily for chats)."""
     logging.info("Initializing FirestoreRepository...")
-    project_id = settings.gcp_project  # Ensure this is correctly set in your config
+    project_id = settings.gcp_project_id  # Ensure this is correctly set in your config
     return FirestoreRepository(project_id=project_id)
 
 @lru_cache()
@@ -114,18 +113,6 @@ def get_cloudsql_repo(connector: Connector = Depends(get_connector)) -> CloudSql
     # Pass the connector and settings needed for connection details
     logging.info("Initializing CloudSqlRepository...")
     return CloudSqlRepository(connector=connector, settings=settings)
-
-
-# --- Pipeline Dependency (Updated) ---
-
-def get_pipeline(
-    repo: FirestoreRepository = Depends(get_repo),
-    llm_service: LLMService = Depends(get_llm_service),
-    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo), # Inject CloudSqlRepository
-) -> DocumentPipeline:
-    """Provides a DocumentPipeline instance with necessary repositories."""
-    # Pass all required dependencies to the constructor
-    return DocumentPipeline(settings=settings, repo=repo, llm_service=llm_service, sql_repo=sql_repo)
 
 
 @lru_cache()

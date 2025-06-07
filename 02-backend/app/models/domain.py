@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ConfigDict
 from typing import List, Optional, Literal, Dict
 import datetime
 import logging
@@ -53,7 +53,6 @@ class ChatMessage(BaseModel):
     text: str
     sender: Literal["user", "ai", "bot"]
     timestamp: Optional[datetime.datetime] = None
-    sources: Optional[List[DocumentSource]] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -116,6 +115,8 @@ class EmailHeader(BaseModel):
     value: str
 
 class EmailMetadata(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    
     id: str
     threadId: str
     labelIds: List[str] = []
@@ -123,9 +124,6 @@ class EmailMetadata(BaseModel):
     subject: Optional[str] = None
     from_address: Optional[str] = Field(None, alias="from")
     date: Optional[str] = None
-
-    class Config:
-        allow_population_by_field_name = True
 
 class EmailBodyResponse(BaseModel):
     body: str
