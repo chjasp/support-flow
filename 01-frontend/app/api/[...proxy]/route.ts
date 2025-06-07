@@ -96,6 +96,19 @@ async function proxyRequest(req: NextRequest) {
     });
 
     // Forward the backend response to the client
+    // Handle 204 No Content responses (common for DELETE operations)
+    if (backendResp.status === 204) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: Object.fromEntries(
+          Object.entries(backendResp.headers).map(([key, value]) => [
+            key,
+            Array.isArray(value) ? value.join(', ') : String(value)
+          ])
+        )
+      });
+    }
+
     return new NextResponse(JSON.stringify(backendResp.data), {
       status: backendResp.status,
       headers: {

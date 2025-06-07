@@ -8,7 +8,7 @@ from google.api_core.exceptions import NotFound
 from google.cloud.firestore import SERVER_TIMESTAMP # Import SERVER_TIMESTAMP
 
 from app.config import get_settings
-from app.models.domain import ChatMessage, ChatMetadata, DocumentSource # Import chat models and DocumentSource
+from app.models.domain import ChatMessage, ChatMetadata # Remove DocumentSource import
 
 _DEFAULT_CHAT_TITLE = "New Chat"
 
@@ -89,8 +89,6 @@ class FirestoreRepository:
         messages = []
         for msg in messages_stream:
             data = msg.to_dict()
-            src_raw = data.get("sources") or []
-            sources = [DocumentSource(**s) for s in src_raw] if src_raw else None
 
             messages.append(
                 ChatMessage(
@@ -98,7 +96,6 @@ class FirestoreRepository:
                     text=data.get("text", ""),
                     sender=data.get("sender", "bot"),
                     timestamp=data.get("timestamp"),
-                    sources=sources,
                 )
             )
         return messages
@@ -125,11 +122,6 @@ class FirestoreRepository:
             "sender":    message.sender,
             "timestamp": SERVER_TIMESTAMP, # Use server timestamp for message
         }
-        if message.sources:
-            # store each DocumentSource as plain dict
-            message_data["sources"] = [
-                s.model_dump(exclude_none=True) for s in message.sources
-            ]
 
         # Add the message document
         message_ref.set(message_data)
@@ -157,19 +149,12 @@ class FirestoreRepository:
         saved_snapshot = message_ref.get()
         saved_data     = saved_snapshot.to_dict()
 
-        # Assemble ChatMessage to return
-        sources_out = (
-            [DocumentSource(**src) for src in saved_data.get("sources", [])]
-            if saved_data.get("sources")
-            else None
-        )
-
+        # Return ChatMessage without sources
         return ChatMessage(
             id=message_ref.id,
             text=saved_data.get("text", ""),
             sender=saved_data.get("sender", message.sender),
             timestamp=saved_data.get("timestamp"), # Use timestamp from saved data
-            sources=sources_out,
         )
 
     def update_chat_title(self, chat_id: str, new_title: str) -> None:

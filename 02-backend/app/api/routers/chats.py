@@ -1,11 +1,10 @@
 import uuid, logging, datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Path
 from typing import List
-from collections import OrderedDict
 
-from app.api.deps import get_repo, get_pipeline
+from app.api.deps import get_repo, get_llm_service
 from app.services.firestore import FirestoreRepository, _DEFAULT_CHAT_TITLE, NotFound
-from app.services.pipeline import DocumentPipeline
+from app.services.llm_service import LLMService
 from app.models.domain import (
     QueryRequest,
     # QueryResponse, # No longer used here
@@ -14,7 +13,6 @@ from app.models.domain import (
     ChatMetadata,
     NewChatResponse,
     PostMessageResponse,
-    DocumentSource
 )
 from app.config import get_settings
 
@@ -95,10 +93,10 @@ async def post_message_to_chat(
     body: QueryRequest,
     chat_id: str = Path(..., title="The ID of the chat session"),
     repo: FirestoreRepository = Depends(get_repo),
-    pipeline: DocumentPipeline = Depends(get_pipeline)
+    llm_service: LLMService = Depends(get_llm_service)
 ):
     """
-    Sends a user message to a chat, generates a bot response using RAG,
+    Sends a user message to a chat, generates a bot response directly from the LLM,
     saves both messages, updates chat metadata (including title if needed via repo method),
     and returns both saved messages.
     """
@@ -108,34 +106,17 @@ async def post_message_to_chat(
         user_message_to_save = ChatMessage(text=body.query, sender="user")
         saved_user_message = repo.add_message_to_chat(chat_id, user_message_to_save)
 
-        # 2. REMOVED: Title update logic block is no longer needed here.
-        # The logic is now inside repo.add_message_to_chat
-
-
-        # 3. Perform RAG Pipeline
-        logging.info(f"Performing RAG for chat {chat_id} with query: '{body.query[:50]}...'")
-        context_chunks = await pipeline.hybrid_search(body.query)
-        answer = await pipeline.answer(body.query, context_chunks)
+        # 2. Generate answer directly from LLM (no RAG)
+        logging.info(f"Generating direct LLM response for chat {chat_id} with query: '{body.query[:50]}...'")
+        answer = await llm_service.generate_answer(body.query)
         logging.info(f"Generated answer for chat {chat_id}: '{answer[:50]}...'")
 
-        # 4. Build the distinct document list
-        unique_docs = OrderedDict()
-        for c in context_chunks:
-            doc_id = c.get("doc_id") or c.get("document_id")
-            if doc_id and doc_id not in unique_docs:
-                unique_docs[doc_id] = DocumentSource(
-                    id=str(doc_id),
-                    name=c.get("doc_filename") or "Unknown Document",
-                    uri=c.get("gcs_uri"),
-                )
-        sources = list(unique_docs.values())
-
-        # 5. Save Bot Message
-        bot_message_to_save = ChatMessage(text=answer, sender="bot", sources=sources)
+        # 3. Save Bot Message
+        bot_message_to_save = ChatMessage(text=answer, sender="bot")
         # Note: add_message_to_chat only updates title on USER messages
         saved_bot_message = repo.add_message_to_chat(chat_id, bot_message_to_save)
 
-        # 6. Prepare and Return the New Response Model
+        # 4. Prepare and Return the Response Model
         return PostMessageResponse(
             user_message=saved_user_message,
             bot_message=saved_bot_message

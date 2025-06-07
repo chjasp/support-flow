@@ -1,8 +1,16 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import List, Optional
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding='utf-8',
+        case_sensitive=True,
+        protected_namespaces=('settings_',)
+    )
+    
     gcp_project_id: str
     gcp_location: str
     model_generation: str
@@ -32,11 +40,6 @@ class Settings(BaseSettings):
 
     # --- Unified Content Processing Settings ---
     content_processing_topic: str = "content-processing-topic"  # Pub/Sub topic name
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
-        case_sensitive = True
 
 @lru_cache()
 def get_settings():

@@ -26,14 +26,11 @@ import { authFetch } from "@/lib/authFetch";
 
 type Sender = "user" | "bot";
 
-type DocSource = { id: string; name: string; uri?: string };
-
 type Message = {
   id: string;
   text: string;
   sender: Sender;
   timestamp: string;
-  sources?: DocSource[];
 };
 
 type ChatMetadata = {
@@ -239,13 +236,6 @@ export default function HomePage() {
   const handleDeleteChat = async (chatId: string) => {
     if (!chatId || isDeletingChat) return;
 
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this chat and all its messages?",
-      )
-    )
-      return;
-
     if (activeTypingMessageId.current && chatId === activeChatId) {
       clearTypingEffect();
       activeTypingMessageId.current = null;
@@ -438,11 +428,11 @@ export default function HomePage() {
                 <Button
                   key={chat.id}
                   variant="ghost"
-                  className={`justify-start w-full text-left h-auto py-2 px-3 ${
+                  className={`justify-start w-full text-left h-auto py-2 px-3 cursor-pointer disabled:cursor-not-allowed ${
                     chat.id === activeChatId
                       ? "bg-accent text-accent-foreground"
                       : ""
-                  } hover:cursor-pointer`}
+                  }`}
                   onClick={() => handleSelectChat(chat.id)}
                   disabled={interactionDisabled}
                 >
@@ -455,7 +445,7 @@ export default function HomePage() {
 
         <div className="p-4 border-t mt-auto">
           <Button
-            className="w-full"
+            className="w-full cursor-pointer disabled:cursor-not-allowed"
             onClick={handleNewChat}
             disabled={interactionDisabled}
           >
@@ -478,7 +468,7 @@ export default function HomePage() {
               size="icon"
               onClick={() => handleDeleteChat(activeChatId)}
               disabled={interactionDisabled}
-              className="text-muted-foreground hover:text-destructive hover:cursor-pointer disabled:cursor-not-allowed"
+              className="text-muted-foreground hover:text-destructive cursor-pointer disabled:cursor-not-allowed"
               title="Delete this chat"
             >
               {isDeletingChat ? (
@@ -532,33 +522,6 @@ export default function HomePage() {
                   ) : (
                     m.text
                   )}
-
-                  {/* ---- Reviewed Documents dropdown ---- */}
-                  {m.sender === "bot" && m.sources?.length ? (
-                    <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer text-muted-foreground">
-                        Reviewed Documents ({m.sources.length})
-                      </summary>
-                      <ul className="ml-4 list-disc">
-                        {m.sources.map((s) => (
-                          <li key={s.id}>
-                            {s.uri ? (
-                              <a
-                                href={s.uri}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="underline"
-                              >
-                                {s.name}
-                              </a>
-                            ) : (
-                              s.name
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
                 </div>
               </div>
             ))}
@@ -591,7 +554,7 @@ export default function HomePage() {
 
             <Button
               size="icon"
-              className="h-9 w-9"
+              className="h-9 w-9 cursor-pointer disabled:cursor-not-allowed"
               onClick={handleSendMessage}
               disabled={
                 interactionDisabled ||
