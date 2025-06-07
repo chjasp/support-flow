@@ -17,8 +17,8 @@ class LLMService:
         # One client for the whole lifetime of the service
         self.client = genai.Client(
             vertexai=True,                  # use Vertex → IAM & EU residency
-            project=s.gcp_project,
-            location=s.gcp_location,
+            project=s.gcp_project_id,
+            location="global",
         )
 
         self.generation_model = s.model_generation          # e.g. "gemini-2.5-flash-preview-04-17"

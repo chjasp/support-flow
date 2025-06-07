@@ -89,7 +89,7 @@ async def get_current_user(
 def get_repo() -> FirestoreRepository:
     """Provides a FirestoreRepository instance (now primarily for chats)."""
     logging.info("Initializing FirestoreRepository...")
-    project_id = settings.gcp_project  # Ensure this is correctly set in your config
+    project_id = settings.gcp_project_id  # Ensure this is correctly set in your config
     return FirestoreRepository(project_id=project_id)
 
 @lru_cache()

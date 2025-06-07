@@ -25,7 +25,7 @@ export function MainNav({
   return (
     <div className={cn("flex w-full items-center justify-between", className)} {...props}>
       <div className="flex items-center space-x-6">
-        <Link href="/chat" className="mr-6 flex items-center space-x-2">
+        <Link href="/" className="mr-6 flex items-center space-x-2">
           <span className="font-bold sm:inline-block">
             bloomlake
           </span>
@@ -34,8 +34,8 @@ export function MainNav({
           <NavigationMenuList>
             <NavigationMenuItem>
               <NavigationMenuLink asChild>
-                <Link href="/chat" className={navigationMenuTriggerStyle()}>
-                  Home
+                <Link href="/" className={navigationMenuTriggerStyle()}>
+                  Chat
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
@@ -43,13 +43,6 @@ export function MainNav({
               <NavigationMenuLink asChild>
                 <Link href="/knowledge-base" className={navigationMenuTriggerStyle()}>
                   Upload
-                </Link>
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-            <NavigationMenuItem>
-              <NavigationMenuLink asChild>
-                <Link href="/chat" className={navigationMenuTriggerStyle()}>
-                  Chat
                 </Link>
               </NavigationMenuLink>
             </NavigationMenuItem>
@@ -73,7 +66,7 @@ export function MainNav({
           <Button
             variant="default"
             size="sm"
-            onClick={() => signIn("google", { callbackUrl: "/chat" })}
+            onClick={() => signIn("google", { callbackUrl: "/" })}
           >
             <LogIn className="mr-2 h-4 w-4" /> Sign In
           </Button>
