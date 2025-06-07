@@ -26,7 +26,6 @@ from vertexai.generative_models import ToolConfig
 from dotenv import load_dotenv
 
 # Import the new scraper
-from scraper import WebDocumentProcessor
 
 load_dotenv()
 
