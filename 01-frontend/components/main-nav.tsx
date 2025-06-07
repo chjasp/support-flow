@@ -25,7 +25,7 @@ export function MainNav({
   return (
     <div className={cn("flex w-full items-center justify-between", className)} {...props}>
       <div className="flex items-center space-x-6">
-        <Link href="/" className="mr-6 flex items-center space-x-2">
+        <Link href="/chat" className="mr-6 flex items-center space-x-2">
           <span className="font-bold sm:inline-block">
             bloomlake
           </span>
@@ -34,7 +34,7 @@ export function MainNav({
           <NavigationMenuList>
             <NavigationMenuItem>
               <NavigationMenuLink asChild>
-                <Link href="/" className={navigationMenuTriggerStyle()}>
+                <Link href="/chat" className={navigationMenuTriggerStyle()}>
                   Home
                 </Link>
               </NavigationMenuLink>
@@ -70,7 +70,11 @@ export function MainNav({
             </Button>
           </>
         ) : (
-          <Button variant="default" size="sm" onClick={() => signIn("google")}>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => signIn("google", { callbackUrl: "/chat" })}
+          >
             <LogIn className="mr-2 h-4 w-4" /> Sign In
           </Button>
         )}
