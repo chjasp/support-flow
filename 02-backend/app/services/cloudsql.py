@@ -1,6 +1,7 @@
 import logging
 import uuid
 import datetime as dt
+import json
 from typing import List, Dict, Any, Optional, Iterator
 from contextlib import contextmanager
 # Remove psycopg2 imports if only used for pool/errors previously
@@ -47,6 +48,12 @@ class CloudSqlRepository:
             if conn:
                 conn.close()
                 logging.debug("Cloud SQL connection closed.")
+
+    @contextmanager
+    def get_connection(self) -> Iterator[Any]:
+        """Public wrapper around ``_get_conn`` for external callers."""
+        with self._get_conn() as conn:
+            yield conn
                 
     def _to_pgvector(self, vec: List[float]) -> str:
         # keep it dense → smaller payload, less parsing time
@@ -327,4 +334,189 @@ class CloudSqlRepository:
             logging.error(f"Error retrieving 3D chunks for document {doc_id}: {e}", exc_info=True)
             raise
             
+        return results
+
+    # --- Task Management Methods ---
+    def create_processing_task(
+        self, 
+        task_id: str, 
+        task_type: str, 
+        input_data: Dict
+    ) -> None:
+        """Create a new processing task in the database."""
+        sql = """
+            INSERT INTO processing_tasks (task_id, task_type, input_data)
+            VALUES (%s, %s, %s)
+        """
+        
+        try:
+            task_uuid = uuid.UUID(task_id)
+        except ValueError:
+            raise ValueError("Invalid task ID format.")
+        
+        try:
+            with self._get_conn() as conn:
+                cur = None
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, (task_uuid, task_type, json.dumps(input_data)))
+                    conn.commit()
+                    logging.info(f"Created processing task {task_id} of type {task_type}")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error creating processing task {task_id}: {e}", exc_info=True)
+            raise
+
+    def update_task_status(
+        self, 
+        task_id: str, 
+        status: str, 
+        result_data: Optional[Dict] = None,
+        error_message: Optional[str] = None
+    ) -> None:
+        """Update the status of a processing task."""
+        try:
+            task_uuid = uuid.UUID(task_id)
+        except ValueError:
+            raise ValueError("Invalid task ID format.")
+        
+        # Build the update query dynamically based on what's provided
+        set_clauses = ["status = %s"]
+        params = [status]
+        
+        if result_data is not None:
+            set_clauses.append("result_data = %s")
+            params.append(json.dumps(result_data))
+        
+        if error_message is not None:
+            set_clauses.append("error_message = %s")
+            params.append(error_message)
+        
+        if status in ["completed", "failed"]:
+            set_clauses.append("completed_at = NOW()")
+        
+        params.append(task_uuid)  # For WHERE clause
+        
+        sql = f"""
+            UPDATE processing_tasks 
+            SET {', '.join(set_clauses)}
+            WHERE task_id = %s
+        """
+        
+        try:
+            with self._get_conn() as conn:
+                cur = None
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, params)
+                    if cur.rowcount == 0:
+                        raise KeyError(f"Task {task_id} not found")
+                    conn.commit()
+                    logging.info(f"Updated task {task_id} status to {status}")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error updating task {task_id}: {e}", exc_info=True)
+            raise
+
+    def get_processing_task(self, task_id: str) -> Dict[str, Any]:
+        """Get a processing task by ID."""
+        try:
+            task_uuid = uuid.UUID(task_id)
+        except ValueError:
+            raise ValueError("Invalid task ID format.")
+        
+        sql = """
+            SELECT task_id, task_type, status, input_data, result_data, 
+                   error_message, created_at, updated_at, completed_at
+            FROM processing_tasks 
+            WHERE task_id = %s
+        """
+        
+        try:
+            with self._get_conn() as conn:
+                cur = None
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, (task_uuid,))
+                    row = cur.fetchone()
+                    
+                    if not row:
+                        raise KeyError(f"Task {task_id} not found")
+                    
+                    colnames = [desc[0] for desc in cur.description]
+                    result = dict(zip(colnames, row))
+                    
+                    # Convert UUID back to string and parse JSON fields
+                    result["task_id"] = str(result["task_id"])
+                    result["input_data"] = json.loads(result["input_data"]) if result["input_data"] else {}
+                    result["result_data"] = json.loads(result["result_data"]) if result["result_data"] else None
+                    
+                    return result
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error getting task {task_id}: {e}", exc_info=True)
+            raise
+
+    def list_processing_tasks(
+        self, 
+        status: Optional[str] = None, 
+        task_type: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """List processing tasks with optional filtering."""
+        where_clauses = []
+        params = []
+        
+        if status:
+            where_clauses.append("status = %s")
+            params.append(status)
+        
+        if task_type:
+            where_clauses.append("task_type = %s")
+            params.append(task_type)
+        
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        params.append(limit)
+        
+        sql = f"""
+            SELECT task_id, task_type, status, input_data, result_data,
+                   error_message, created_at, updated_at, completed_at
+            FROM processing_tasks 
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        
+        results = []
+        try:
+            with self._get_conn() as conn:
+                cur = None
+                try:
+                    cur = conn.cursor()
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+                    
+                    colnames = [desc[0] for desc in cur.description]
+                    for row in rows:
+                        result = dict(zip(colnames, row))
+                        # Convert UUID back to string and parse JSON fields
+                        result["task_id"] = str(result["task_id"])
+                        result["input_data"] = json.loads(result["input_data"]) if result["input_data"] else {}
+                        result["result_data"] = json.loads(result["result_data"]) if result["result_data"] else None
+                        results.append(result)
+                    
+                    logging.info(f"Retrieved {len(results)} processing tasks")
+                finally:
+                    if cur:
+                        cur.close()
+        except Exception as e:
+            logging.error(f"Error listing processing tasks: {e}", exc_info=True)
+            raise
+        
         return results

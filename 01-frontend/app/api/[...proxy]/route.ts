@@ -126,7 +126,12 @@ async function proxyRequest(req: NextRequest) {
       }
     }
     console.log("==================================");
-    throw error;
+    const status = (error as any)?.response?.status || 500;
+    const data = (error as any)?.response?.data || { message: "Proxy request failed" };
+    return new NextResponse(JSON.stringify(data), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 }
 

@@ -1,13 +1,19 @@
 import logging
-import requests
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, HttpUrl, ValidationError
+from pydantic import BaseModel, ValidationError
+import datetime
+import uuid
 
 from app.api.deps import get_cloudsql_repo
 from app.services.cloudsql import CloudSqlRepository
+from app.services.pubsub_service import get_pubsub_service, PubSubService
 from app.api.auth import verify_token
 from app.config import get_settings
+from app.models.domain import (
+    UrlProcessingRequest, ProcessingTaskResponse, ProcessingTaskStatus,
+    TextProcessingRequest
+)
 
 router = APIRouter(
     prefix="/web",
@@ -27,6 +33,7 @@ class ProcessingResponse(BaseModel):
     status: str
     message: str
 
+# Pydantic models for 3D visualization
 class Document3DResponse(BaseModel):
     """Representation of a document with 3D coordinates for the frontend."""
 
@@ -40,37 +47,15 @@ class Document3DResponse(BaseModel):
     chunkCount: int
     url: Optional[str] = None
 
-# In-memory task tracking (in production, use Redis or database)
-processing_tasks = {}
-
-def call_processing_service(urls: List[str]) -> Dict[str, Any]:
-    """Call the processing service to handle URL processing."""
-    processing_url = settings.processing_service_url
-    
-    try:
-        response = requests.post(
-            f"{processing_url}/process-urls",
-            json={"urls": urls},
-            timeout=300  # 5 minute timeout
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logging.error(f"Error calling processing service: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Processing service unavailable"
-        )
-
-@router.post("/process-urls", response_model=ProcessingResponse)
+@router.post("/process-urls", response_model=ProcessingTaskResponse)
 async def process_urls(
     request_obj: Request,
-    background_tasks: BackgroundTasks,
-    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo)
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+    pubsub_service: PubSubService = Depends(get_pubsub_service)
 ):
     """
-    Process a list of URLs for both RAG and 3D visualization.
-    This endpoint triggers background processing and returns immediately.
+    Process a list of URLs using unified event-driven architecture.
+    This endpoint publishes URL processing tasks to Pub/Sub for consistent processing.
     """
     # ===== LOGGING POINT 1: Raw Request Details =====
     logging.info("===== BACKEND URL PROCESSING DEBUG =====")
@@ -90,8 +75,8 @@ async def process_urls(
         
         # ===== LOGGING POINT 2: Pydantic Validation =====
         logging.info("Attempting Pydantic validation...")
-        request = UrlProcessRequest(**body_json)
-        logging.info(f"Pydantic validation successful. URLs: {[str(url) for url in request.urls]}")
+        request = UrlProcessingRequest(**body_json)
+        logging.info(f"Pydantic validation successful. URLs: {request.urls}")
         
     except json.JSONDecodeError as e:
         logging.error(f"JSON parsing failed: {e}")
@@ -120,56 +105,76 @@ async def process_urls(
     
     logging.info("================================")
     
-    import uuid
     task_id = str(uuid.uuid4())
     
-    # Convert HttpUrl objects to strings
-    url_strings = [str(url) for url in request.urls]
-    
-    processing_tasks[task_id] = {
-        'status': 'processing',
-        'urls': url_strings,
-        'description': request.description,
-        'created_at': str(datetime.utcnow())
-    }
-    
-    # Add background task
-    background_tasks.add_task(process_urls_background, task_id, url_strings)
-    
-    return ProcessingResponse(
-        task_id=task_id,
-        status="processing",
-        message=f"Started processing {len(url_strings)} URLs"
-    )
-
-async def process_urls_background(task_id: str, urls: List[str]):
-    """Background task to process URLs."""
     try:
-        result = call_processing_service(urls)
-        processing_tasks[task_id].update({
-            'status': 'completed',
-            'result': result,
-            'completed_at': str(datetime.utcnow())
-        })
-        logging.info(f"Task {task_id} completed successfully")
+        # Create task record in database
+        task_input_data = {
+            "urls": request.urls,
+            "description": request.description
+        }
+        
+        sql_repo.create_processing_task(
+            task_id=task_id,
+            task_type="url_processing",
+            input_data=task_input_data
+        )
+        
+        # Publish to Pub/Sub for processing
+        message_id = pubsub_service.publish_url_processing_task(
+            task_id=task_id,
+            urls=request.urls,
+            description=request.description
+        )
+        
+        logging.info(f"Created URL processing task {task_id} with {len(request.urls)} URLs. Message ID: {message_id}")
+        
+        return ProcessingTaskResponse(
+            task_id=task_id,
+            status="queued",
+            message=f"Queued {len(request.urls)} URLs for processing",
+            created_at=datetime.datetime.utcnow().isoformat()
+        )
+        
     except Exception as e:
-        processing_tasks[task_id].update({
-            'status': 'failed',
-            'error': str(e),
-            'completed_at': str(datetime.utcnow())
-        })
-        logging.error(f"Task {task_id} failed: {e}")
+        logging.error(f"Failed to create URL processing task: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue URL processing task: {str(e)}"
+        )
 
-@router.get("/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """Get the status of a processing task."""
-    if task_id not in processing_tasks:
+@router.get("/tasks/{task_id}", response_model=ProcessingTaskStatus)
+async def get_task_status(
+    task_id: str,
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo)
+):
+    """Get the status of a processing task from the database."""
+    try:
+        task_data = sql_repo.get_processing_task(task_id)
+        
+        return ProcessingTaskStatus(
+            task_id=task_data["task_id"],
+            task_type=task_data["task_type"],
+            status=task_data["status"],
+            input_data=task_data["input_data"],
+            result_data=task_data["result_data"],
+            error_message=task_data["error_message"],
+            created_at=task_data["created_at"].isoformat() if task_data["created_at"] else "",
+            updated_at=task_data["updated_at"].isoformat() if task_data["updated_at"] else "",
+            completed_at=task_data["completed_at"].isoformat() if task_data["completed_at"] else None
+        )
+        
+    except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-    
-    return processing_tasks[task_id]
+    except Exception as e:
+        logging.error(f"Error retrieving task {task_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve task status"
+        )
 
 @router.get("/documents-3d", response_model=List[Document3DResponse])
 async def get_documents_3d(
@@ -198,33 +203,62 @@ async def get_google_cloud_urls():
         "https://cloud.google.com/vertex-ai/docs/tutorials/text-classification-automl",
         "https://cloud.google.com/bigquery/docs/quickstarts/load-data-console",
         "https://cloud.google.com/kubernetes-engine/docs/quickstart",
-        "https://cloud.google.com/functions/docs/quickstart-python",
         "https://cloud.google.com/sql/docs/mysql/quickstart",
-        "https://cloud.google.com/firestore/docs/quickstart-servers",
-        "https://cloud.google.com/pubsub/docs/quickstart-console",
-        "https://cloud.google.com/iam/docs/understanding-roles",
-        "https://cloud.google.com/security/security-design",
-        "https://cloud.google.com/architecture/framework",
-        "https://cloud.google.com/docs/security/best-practices"
+        "https://cloud.google.com/functions/docs/quickstart-console",
+        "https://cloud.google.com/firestore/docs/quickstart-servers"
     ]
     
     return {
         "urls": urls,
-        "count": len(urls),
-        "description": "Curated Google Cloud documentation URLs for processing"
+        "description": "Google Cloud documentation URLs for testing"
     }
 
-@router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
-    """Delete a completed or failed task from memory."""
-    if task_id not in processing_tasks:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
+@router.post("/process-text", response_model=ProcessingTaskResponse)
+async def process_text(
+    request: TextProcessingRequest,
+    sql_repo: CloudSqlRepository = Depends(get_cloudsql_repo),
+    pubsub_service: PubSubService = Depends(get_pubsub_service)
+):
+    """
+    Process text content using unified event-driven architecture.
+    This endpoint publishes text processing tasks to Pub/Sub.
+    """
+    task_id = str(uuid.uuid4())
     
-    del processing_tasks[task_id]
-    return {"message": "Task deleted successfully"}
-
-# Import datetime here to avoid circular imports
-from datetime import datetime 
+    try:
+        # Create task record in database
+        task_input_data = {
+            "content": request.content,
+            "title": request.title,
+            "content_type": request.content_type
+        }
+        
+        sql_repo.create_processing_task(
+            task_id=task_id,
+            task_type="text_processing",
+            input_data=task_input_data
+        )
+        
+        # Publish to Pub/Sub for processing
+        message_id = pubsub_service.publish_text_processing_task(
+            task_id=task_id,
+            content=request.content,
+            title=request.title,
+            content_type=request.content_type
+        )
+        
+        logging.info(f"Created text processing task {task_id} for '{request.title}'. Message ID: {message_id}")
+        
+        return ProcessingTaskResponse(
+            task_id=task_id,
+            status="queued",
+            message=f"Queued text content '{request.title}' for processing",
+            created_at=datetime.datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logging.error(f"Failed to create text processing task: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to queue text processing task: {str(e)}"
+        ) 

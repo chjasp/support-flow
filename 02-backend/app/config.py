@@ -30,10 +30,19 @@ class Settings(BaseSettings):
     # --- Processing Service Settings ---
     processing_service_url: str = "http://localhost:8080"  # Default for local development
 
+    # --- Unified Content Processing Settings ---
+    gcp_project_id: str  # For Pub/Sub topic path
+    content_processing_topic: str = "content-processing-topic"  # Pub/Sub topic name
+
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
         case_sensitive = True
+        
+        # Add environment variable mapping
+        fields = {
+            'gcp_project_id': {'env': ['GCP_PROJECT_ID', 'GOOGLE_CLOUD_PROJECT', 'gcp_project']},
+        }
 
 @lru_cache()
 def get_settings():

@@ -5,7 +5,7 @@ import { authFetch } from "@/lib/authFetch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { format } from "date-fns";
 import DocumentCloud3D from "@/components/DocumentCloud3D";
+import ChatSidebar, { ChatSidebarHandle } from "@/components/ChatSidebar";
 
 // Document interface matching the knowledge base
 interface Document {
@@ -32,7 +33,7 @@ interface Document {
 interface Document3D {
   id: string;
   name: string;
-  type: 'Document' | 'Pasted Text';
+  type: 'Document' | 'Pasted Text' | 'Web Page';
   fileType?: string;
   position: [number, number, number];
   color: string;
@@ -92,6 +93,7 @@ export default function HomePage() {
   ]);
   const [agentInstruction, setAgentInstruction] = useState('');
   const [activeAgentId, setActiveAgentId] = useState('maxi');
+  const chatSidebarRef = useRef<ChatSidebarHandle>(null);
 
   // Fetch documents from the knowledge base
   const fetchDocuments = useCallback(async () => {
@@ -169,6 +171,9 @@ export default function HomePage() {
     // Start the movement sequence
     moveAgentThroughWaypoints(agentId, waypoints);
 
+    // Send the instruction to the chat sidebar
+    chatSidebarRef.current?.sendMessage(agentInstruction.trim());
+
     // Clear input after sending
     setAgentInstruction('');
   };
@@ -239,6 +244,7 @@ export default function HomePage() {
         onDocumentSelect={handleDocumentSelect}
         agents={agents}
         setAgents={setAgents}
+        onAgentSelect={(agent) => setActiveAgentId(agent.id)}
       />
 
       {/* Agent interaction bar */}
@@ -246,7 +252,7 @@ export default function HomePage() {
         <select
           value={activeAgentId}
           onChange={(e) => setActiveAgentId(e.target.value)}
-          className="bg-gray-800 text-white px-2 py-1 rounded-md"
+          className="flex h-9 w-[100px] rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
           {agents.map((agent) => (
             <option key={agent.id} value={agent.id}>
@@ -342,6 +348,7 @@ export default function HomePage() {
           )}
         </DialogContent>
       </Dialog>
+      <ChatSidebar ref={chatSidebarRef} />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import traceback
 import uuid
+import base64
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -740,6 +741,155 @@ async def process_urls(request: UrlProcessRequest):
             status_code=500,
             detail=f"Failed to process URLs: {str(e)}"
         )
+
+# Pydantic models for unified content processing
+class ContentProcessingMessage(BaseModel):
+    task_id: str
+    task_type: str  # "url_processing", "text_processing", "file_processing"
+    input_data: dict
+    metadata: Optional[dict] = None
+
+@app.post("/process-content")
+async def process_content(request: Request):
+    """
+    Unified content processing endpoint for Pub/Sub messages.
+    Handles URL processing, text processing, and file processing.
+    """
+    try:
+        # Parse the Pub/Sub message
+        body = await request.body()
+        logger.info(f"Received Pub/Sub message: {body}")
+        
+        # Pub/Sub sends messages in a specific format
+        message_data = json.loads(body)
+        
+        # Extract the actual message content
+        if "message" in message_data:
+            # This is a Pub/Sub push message
+            message_content = base64.b64decode(message_data["message"]["data"]).decode('utf-8')
+            attributes = message_data["message"].get("attributes", {})
+        else:
+            # Direct message (for testing)
+            message_content = body.decode('utf-8')
+            attributes = {}
+        
+        # Parse the content processing message
+        content_message = ContentProcessingMessage.parse_raw(message_content)
+        
+        logger.info(f"Processing {content_message.task_type} task {content_message.task_id}")
+        
+        # Update task status to processing
+        _update_task_status(content_message.task_id, "processing")
+        
+        # Route to appropriate processor based on task type
+        if content_message.task_type == "url_processing":
+            result = await _process_urls_from_message(content_message)
+        elif content_message.task_type == "text_processing":
+            result = await _process_text_from_message(content_message)
+        elif content_message.task_type == "file_processing":
+            result = await _process_file_from_message(content_message)
+        else:
+            raise ValueError(f"Unknown task type: {content_message.task_type}")
+        
+        # Update task status to completed
+        _update_task_status(content_message.task_id, "completed", result)
+        
+        logger.info(f"Successfully completed {content_message.task_type} task {content_message.task_id}")
+        
+        return {"status": "success", "task_id": content_message.task_id, "result": result}
+        
+    except Exception as e:
+        logger.error(f"Error processing content: {e}", exc_info=True)
+        
+        # Try to update task status to failed if we have a task_id
+        try:
+            if 'content_message' in locals():
+                _update_task_status(content_message.task_id, "failed", error_message=str(e))
+        except Exception as update_error:
+            logger.error(f"Failed to update task status: {update_error}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process content: {str(e)}"
+        )
+
+async def _process_urls_from_message(message: ContentProcessingMessage) -> dict:
+    """Process URLs from a Pub/Sub message."""
+    urls = message.input_data.get("urls", [])
+    description = message.input_data.get("description", "")
+    
+    logger.info(f"Processing {len(urls)} URLs for task {message.task_id}")
+    
+    # Use existing URL processing logic
+    processor = WebDocumentProcessor()
+    result = processor.process_urls(urls)
+    
+    return {
+        "processed_count": len(result['processed']),
+        "failed_count": len(result['failed']),
+        "total_chunks": result['total_chunks'],
+        "details": result
+    }
+
+async def _process_text_from_message(message: ContentProcessingMessage) -> dict:
+    """Process text content from a Pub/Sub message."""
+    content = message.input_data.get("content", "")
+    title = message.input_data.get("title", "Untitled")
+    content_type = message.input_data.get("content_type", "text/plain")
+    
+    logger.info(f"Processing text content '{title}' for task {message.task_id}")
+    
+    # Create a document record for the text content
+    doc_id = uuid.uuid4()
+    
+    with _connect() as conn:
+        # Insert initial record
+        _insert_initial(conn, doc_id, title, f"text://{message.task_id}", 0)
+        conn.commit()
+        
+        # Process the text content
+        if content:
+            chunks = _chunk_text(content)
+            vectors = _embed_chunks(chunks)
+            
+            # Update with success
+            _upsert_success(conn, doc_id, title, f"text://{message.task_id}", None, chunks, vectors)
+            conn.commit()
+            
+            logger.info(f"Successfully processed text content with {len(chunks)} chunks")
+            
+            return {
+                "document_id": str(doc_id),
+                "chunks_processed": len(chunks),
+                "title": title
+            }
+        else:
+            # Update status to failed if no content
+            _update_status(conn, doc_id, "Failed", "No content provided")
+            conn.commit()
+            raise ValueError("No content provided for text processing")
+
+async def _process_file_from_message(message: ContentProcessingMessage) -> dict:
+    """Process file content from a Pub/Sub message (placeholder for future implementation)."""
+    logger.info(f"File processing not yet implemented for task {message.task_id}")
+    raise NotImplementedError("File processing from Pub/Sub messages not yet implemented")
+
+def _update_task_status(task_id: str, status: str, result_data: dict = None, error_message: str = None):
+    """Update task status in the database."""
+    try:
+        # This would typically connect to the same database as the backend
+        # For now, we'll log the status update
+        logger.info(f"Task {task_id} status updated to: {status}")
+        if result_data:
+            logger.info(f"Task {task_id} result: {result_data}")
+        if error_message:
+            logger.error(f"Task {task_id} error: {error_message}")
+        
+        # TODO: Implement actual database update
+        # This should connect to the same CloudSQL instance and update the processing_tasks table
+        
+    except Exception as e:
+        logger.error(f"Failed to update task status for {task_id}: {e}")
 
 if __name__ == "__main__":
     # Add PyMuPDF license check/acknowledgement if required by your usage context
