@@ -1,18 +1,13 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import "@/app/globals.css";
-import { MainNav } from "@/components/main-nav";
 import { cn } from "@/lib/utils";
 import { NextAuthProvider } from "@/components/session-provider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -29,22 +24,12 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body
         className={cn(
-          "min-h-screen bg-background font-sans antialiased",
-          geistSans.variable,
-          geistMono.variable
+          "h-screen bg-chatgpt-main font-inter antialiased text-sm leading-4 overflow-hidden",
+          inter.variable
         )}
       >
         <NextAuthProvider>
-          <div className="flex min-h-screen flex-col">
-            <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-              <div className="w-full flex h-14 items-center px-4">
-                <MainNav />
-              </div>
-            </header>
-            <main className="flex flex-1">
-              {children}
-            </main>
-          </div>
+          {children}
         </NextAuthProvider>
       </body>
     </html>
