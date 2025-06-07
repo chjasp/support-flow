@@ -12,13 +12,14 @@ import React, {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Trash2 } from "lucide-react";
+import { Loader2, Trash2, LogOut, LogIn } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
-import { useSession } from "next-auth/react";
+import { useSession, signOut, signIn } from "next-auth/react";
 import { authFetch } from "@/lib/authFetch";
+import Link from "next/link";
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -47,9 +48,8 @@ const MAX_TITLE_LENGTH = 30;
 const TYPING_INTERVAL_MS = 3;
 
 const CHATS_ENDPOINT = '/api/chats';
-const CHAT_ENDPOINT = '/api/chat';
 const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
-const postMessageEndpoint = (chatId: string) => `${CHAT_ENDPOINT}/${chatId}`;
+const postMessageEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
 const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
 
 /* -------------------------------------------------------------------------- */
@@ -204,7 +204,7 @@ export default function HomePage() {
         id,
         title,
         messages,
-      }: { id: string; title: string; messages: Message[] } = await res.json();
+      }: { id: string; title: string; messages?: Message[] } = await res.json();
 
       const newMeta: ChatMetadata = {
         id,
@@ -214,7 +214,7 @@ export default function HomePage() {
 
       setChatList((prev) => [newMeta, ...prev]);
       setActiveChatId(id);
-      setCurrentMessages(messages);
+      setCurrentMessages(messages || []);
       setInputValue("");
       scrollToBottom("instant");
     } catch (err) {
@@ -410,168 +410,326 @@ export default function HomePage() {
   /* ------------------------------------------------------------------------ */
 
   return (
-    <div className="flex h-[calc(100vh-theme(spacing.14)-theme(spacing.6))] border rounded-lg overflow-hidden w-full">
+    <div className="flex h-screen w-full overflow-hidden bg-chatgpt-main">
       {/* ------------------------------ Sidebar ----------------------------- */}
-      <aside className="w-64 md:w-72 border-r flex flex-col bg-muted/30">
-        <div className="p-4 border-b h-16 flex items-center">
-          <h2 className="text-lg font-semibold tracking-tight">Recent Chats</h2>
+      <aside className="chatgpt-sidebar flex flex-col border-r border-chatgpt">
+        {/* Header Controls */}
+        <div className="p-3 space-y-3">
+          {/* Navigation Links */}
+          <div className="flex flex-col gap-1 mb-2">
+            <button
+              onClick={handleNewChat}
+              disabled={interactionDisabled}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors disabled:cursor-not-allowed"
+            >
+              {isCreatingChat && <Loader2 className="h-4 w-4 animate-spin" />}
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Chat
+            </button>
+            <Link
+              href="/knowledge-base"
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              Upload
+            </Link>
+          </div>
+
         </div>
 
-        <ScrollArea className="flex-1 p-2 min-h-0">
-          {isFetchingChats ? (
-            <div className="p-4 text-center text-muted-foreground">
-              Loading chats...
-            </div>
-          ) : (
-            <nav className="flex flex-col gap-1">
-              {chatList.map((chat) => (
-                <Button
-                  key={chat.id}
-                  variant="ghost"
-                  className={`justify-start w-full text-left h-auto py-2 px-3 cursor-pointer disabled:cursor-not-allowed ${
-                    chat.id === activeChatId
-                      ? "bg-accent text-accent-foreground"
-                      : ""
-                  }`}
-                  onClick={() => handleSelectChat(chat.id)}
-                  disabled={interactionDisabled}
-                >
-                  <span className="truncate">{chat.title}</span>
-                </Button>
-              ))}
-            </nav>
-          )}
-        </ScrollArea>
-
-        <div className="p-4 border-t mt-auto">
-          <Button
-            className="w-full cursor-pointer disabled:cursor-not-allowed"
-            onClick={handleNewChat}
-            disabled={interactionDisabled}
-          >
-            {isCreatingChat && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            New Chat
-          </Button>
+        {/* Chats Header */}
+        <div className="px-3 py-2">
+          <h3 className="text-sm text-chatgpt-secondary font-normal">Chats</h3>
         </div>
+
+        {/* Conversation List */}
+        <div className="flex-1 overflow-hidden">
+          <ScrollArea className="h-full px-2">
+            {isFetchingChats ? (
+              <div className="p-4 text-center text-chatgpt-secondary text-sm">
+                Loading chats...
+              </div>
+            ) : (
+              <div className="space-y-0.5 pb-4">
+                {chatList.map((chat) => (
+                  <button
+                    key={chat.id}
+                    className={`w-full text-left px-3 h-[34px] flex items-center cursor-pointer disabled:cursor-not-allowed rounded-lg text-sm font-normal transition-all relative group ${
+                      chat.id === activeChatId
+                        ? "bg-chatgpt-hover text-chatgpt"
+                        : "text-chatgpt hover:bg-chatgpt-hover"
+                    }`}
+                    onClick={() => handleSelectChat(chat.id)}
+                    disabled={interactionDisabled}
+                  >
+                    <div className="flex-1 flex items-center min-w-0">
+                      <span className="truncate flex-1">{chat.title}</span>
+                    </div>
+                    
+                    {/* Delete button - shows on hover */}
+                    <button
+                      className="opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2 p-1 hover:bg-red-600/20 rounded transition-all"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteChat(chat.id);
+                      }}
+                      disabled={interactionDisabled}
+                    >
+                      {isDeletingChat && chat.id === activeChatId ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-chatgpt-secondary" />
+                      ) : (
+                        <Trash2 className="h-3 w-3 text-chatgpt-secondary hover:text-red-400" />
+                      )}
+                    </button>
+                  </button>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </div>
+
+
       </aside>
 
-      {/* --------------------------- Main  Chat ----------------------------- */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 border-b h-16 flex items-center justify-between bg-background/95">
-          <h1 className="text-xl font-bold tracking-tight truncate mr-2">
-            {activeChatTitle}
-          </h1>
-
-          {activeChatId && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => handleDeleteChat(activeChatId)}
-              disabled={interactionDisabled}
-              className="text-muted-foreground hover:text-destructive cursor-pointer disabled:cursor-not-allowed"
-              title="Delete this chat"
+      {/* --------------------------- Main Chat ----------------------------- */}
+      <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-main relative">
+        {/* User Icon - Top Right */}
+        <div className="absolute top-4 right-4 z-10">
+          {session?.user ? (
+            <button
+              onClick={() => signOut()}
+              className="w-8 h-8 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
+              title={`${session.user.name ?? session.user.email} - Click to sign out`}
             >
-              {isDeletingChat ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Trash2 className="h-4 w-4" />
-              )}
-              <span className="sr-only">Delete Chat</span>
-            </Button>
+              {session.user.name?.charAt(0) || session.user.email?.charAt(0) || "U"}
+            </button>
+          ) : (
+            <button
+              onClick={() => signIn("google", { callbackUrl: "/" })}
+              className="w-8 h-8 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
+              title="Sign in"
+            >
+              <LogIn className="h-4 w-4" />
+            </button>
           )}
         </div>
 
         {/* -------------------------- Messages ------------------------------ */}
-        <ScrollArea className="flex-1 p-4 min-h-0" id="message-scroll-area">
-          <div className="space-y-4">
-            {isFetchingMessages && !currentMessages.length && (
-              <div className="flex justify-center items-center p-4">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-muted-foreground">
-                  Loading messages...
-                </span>
-              </div>
-            )}
+        <ScrollArea className="flex-1 min-h-0" id="message-scroll-area">
+          <div className="w-full">
+            <div className="max-w-[720px] mx-auto px-4 py-5 space-y-6">
+              {isFetchingMessages && !currentMessages.length && (
+                <div className="flex justify-center items-center p-4">
+                  <Loader2 className="h-6 w-6 animate-spin text-chatgpt-secondary" />
+                  <span className="ml-2 text-chatgpt-secondary text-sm">
+                    Loading messages...
+                  </span>
+                </div>
+              )}
 
-            {currentMessages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex ${
-                  m.sender === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
+              {currentMessages.map((m) => (
                 <div
-                  className={`max-w-[75%] rounded-lg px-4 py-2 ${
-                    m.sender === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted message-reveal"
-                  }`}
+                  key={m.id}
+                  className="w-full"
                 >
-                  {m.sender === "bot" ? (
-                    <div className="prose dark:prose-invert">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkBreaks]}
-                        rehypePlugins={[rehypeRaw]}
-                        components={{
-                          p: ({ /* node, */ ...props }) => <p className="mb-0" {...props} />,
-                        }}
-                      >
-                        {m.text || ""}
-                      </ReactMarkdown>
+                  {m.sender === "user" ? (
+                    /* User Message - Right-aligned bubble */
+                    <div className="flex justify-end">
+                      <div className="chatgpt-user-bubble px-4 py-3 rounded-lg rounded-br-none max-w-[70%]">
+                        <div className="text-sm leading-relaxed whitespace-pre-wrap">{m.text}</div>
+                      </div>
                     </div>
                   ) : (
-                    m.text
+                    /* Assistant Message - Left-aligned, transparent bg */
+                    <div className="flex justify-start">
+                      <div className="max-w-[70%] px-4 py-3">
+                        <div className="prose prose-invert text-chatgpt text-sm leading-relaxed max-w-none">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm, remarkBreaks]}
+                            rehypePlugins={[rehypeRaw]}
+                            components={{
+                              p: ({ ...props }) => (
+                                <p className="mb-4 last:mb-0 leading-relaxed" {...props} />
+                              ),
+                              ul: ({ ...props }) => (
+                                <ul className="mb-4 last:mb-0 list-disc list-outside ml-6 space-y-1" {...props} />
+                              ),
+                              ol: ({ ...props }) => (
+                                <ol className="mb-4 last:mb-0 list-decimal list-outside ml-6 space-y-1" {...props} />
+                              ),
+                              li: ({ ...props }) => (
+                                <li className="leading-relaxed" style={{ color: '#ECECF1' }} {...props} />
+                              ),
+                              code: ({ className, children, ...props }) => {
+                                const isInline = !className?.includes('language-');
+                                if (isInline) {
+                                  return (
+                                    <code 
+                                      className="bg-[#202123] px-1.5 py-0.5 rounded text-xs font-mono text-chatgpt" 
+                                      style={{ fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace' }}
+                                      {...props}
+                                    >
+                                      {children}
+                                    </code>
+                                  );
+                                }
+                                return (
+                                  <code 
+                                    className={className} 
+                                    style={{ fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace' }}
+                                    {...props}
+                                  >
+                                    {children}
+                                  </code>
+                                );
+                              },
+                              pre: ({ children, ...props }) => (
+                                <pre 
+                                  className="bg-[#202123] p-3 rounded overflow-x-auto text-xs text-chatgpt mb-4 last:mb-0" 
+                                  style={{ fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace', fontSize: '12px' }}
+                                  {...props}
+                                >
+                                  {children}
+                                </pre>
+                              ),
+                              blockquote: ({ ...props }) => (
+                                <blockquote className="border-l-4 border-chatgpt-border pl-4 mb-4 last:mb-0 italic text-chatgpt-secondary" {...props} />
+                              ),
+                              h1: ({ ...props }) => (
+                                <h1 className="text-lg font-semibold mb-3 text-chatgpt" {...props} />
+                              ),
+                              h2: ({ ...props }) => (
+                                <h2 className="text-base font-semibold mb-3 text-chatgpt" {...props} />
+                              ),
+                              h3: ({ ...props }) => (
+                                <h3 className="text-sm font-semibold mb-2 text-chatgpt" {...props} />
+                              ),
+                              strong: ({ ...props }) => (
+                                <strong className="font-semibold text-chatgpt" {...props} />
+                              ),
+                              em: ({ ...props }) => (
+                                <em className="italic text-chatgpt" {...props} />
+                              ),
+                              a: ({ ...props }) => (
+                                <a className="text-blue-400 hover:text-blue-300 underline" {...props} />
+                              ),
+                              table: ({ ...props }) => (
+                                <div className="overflow-x-auto mb-4 last:mb-0">
+                                  <table className="min-w-full border-collapse border border-chatgpt-border" {...props} />
+                                </div>
+                              ),
+                              th: ({ ...props }) => (
+                                <th className="border border-chatgpt-border px-3 py-2 bg-chatgpt-input text-left font-medium" {...props} />
+                              ),
+                              td: ({ ...props }) => (
+                                <td className="border border-chatgpt-border px-3 py-2" {...props} />
+                              ),
+                            }}
+                          >
+                            {m.text || ""}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
-              </div>
-            ))}
+              ))}
 
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="p-3 max-w-[75%] text-sm rounded-lg bg-muted flex items-center space-x-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Thinking...</span>
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="px-4 py-3">
+                    <div className="flex items-center space-x-2 text-chatgpt-secondary text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Thinking...</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div ref={messagesEndRef} />
+              <div ref={messagesEndRef} />
+            </div>
           </div>
         </ScrollArea>
 
         {/* -------------------------- Input --------------------------------- */}
-        <div className="p-4 border-t bg-background/95">
-          <div className="flex items-center gap-2">
-            <Input
-              type="text"
-              placeholder="Type your message..."
-              className="flex-1"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              disabled={interactionDisabled || !activeChatId}
-            />
+        <div className="sticky bottom-0 bg-chatgpt-main">
+          <div className="max-w-[768px] mx-auto p-4">
+            <div className="bg-[#2F2F2F] rounded-3xl px-4 py-4 relative">
+              {/* Center - Textarea */}
+              <div className="pb-10">
+                <textarea
+                  placeholder="Message ChatGPT..."
+                  className="w-full min-h-[32px] max-h-[200px] bg-transparent border-0 text-sm text-chatgpt resize-none focus:outline-none leading-6 chatgpt-textarea placeholder:text-chatgpt-secondary"
+                  value={inputValue}
+                  onChange={(e) => {
+                    setInputValue(e.target.value);
+                    // Auto-resize textarea
+                    e.target.style.height = 'auto';
+                    e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!activeTypingMessageId.current && inputValue.trim()) {
+                        handleSendMessage();
+                      }
+                    }
+                  }}
+                  disabled={interactionDisabled || !activeChatId}
+                  rows={1}
+                />
+              </div>
 
-            <Button
-              size="icon"
-              className="h-9 w-9 cursor-pointer disabled:cursor-not-allowed"
-              onClick={handleSendMessage}
-              disabled={
-                interactionDisabled ||
-                !activeChatId ||
-                !inputValue.trim()
-              }
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                className="w-5 h-5"
-              >
-                <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
-              </svg>
-              <span className="sr-only">Send</span>
-            </Button>
+              {/* Bottom row - Buttons */}
+              <div className="absolute bottom-4 left-4 right-4 flex justify-between items-center">
+                {/* Left side - Attach button */}
+                <button
+                  className="w-8 h-8 flex items-center justify-center rounded-full text-chatgpt-secondary hover:text-chatgpt hover:bg-chatgpt-hover transition-colors"
+                  title="Attach files"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
+
+                {/* Right side - Action buttons */}
+                <div className="flex items-center gap-2">
+                  {/* Microphone Button */}
+                  <button
+                    className="w-8 h-8 flex items-center justify-center rounded-full text-chatgpt-secondary hover:text-chatgpt hover:bg-chatgpt-hover transition-colors"
+                    title="Voice input"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  </button>
+
+                  {/* Send Button */}
+                  <button
+                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+                      inputValue.trim() && !interactionDisabled && activeChatId
+                        ? "bg-white text-black hover:bg-gray-200 cursor-pointer"
+                        : "bg-[#676767] text-[#2F2F2F] cursor-not-allowed"
+                    }`}
+                    onClick={handleSendMessage}
+                    disabled={
+                      interactionDisabled ||
+                      !activeChatId ||
+                      !inputValue.trim()
+                    }
+                    title="Send message"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 4l6 6h-4v10h-4V10H6l6-6z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </main>

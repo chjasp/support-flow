@@ -39,8 +39,8 @@ kill_port() {
 
 # Stop all services
 kill_port 3000 "Frontend (Next.js)"
-kill_port 8000 "Backend (FastAPI)"
-kill_port 8080 "Processing Service (FastAPI)"
+kill_port 8000 "Simplified Backend (FastAPI)"
+kill_port 8080 "Processing Service (FastAPI - Optional)"
 
 # Also kill any remaining uvicorn processes
 echo -e "${YELLOW}🧹 Cleaning up any remaining uvicorn processes...${NC}"
