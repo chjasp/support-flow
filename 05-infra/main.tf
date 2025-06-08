@@ -675,3 +675,122 @@ resource "google_secret_manager_secret_iam_member" "backend_secret_accessor_goog
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.backend.email}"
 }
+
+# ───────────────────────────────────────────────
+#  Cloud Run – Backend
+# ───────────────────────────────────────────────
+
+resource "google_cloud_run_v2_service" "backend" {
+  name     = "backend"
+  location = "europe-west1"
+  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY" # Only allow internal traffic
+  deletion_protection = false
+
+  template {
+    service_account = google_service_account.ingester.email
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 2
+    }
+
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [google_sql_database_instance.pg.connection_name]
+      }
+    }
+
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.vpc.id
+        subnetwork = google_compute_subnetwork.subnet.id
+      }
+    }
+
+    containers {
+      image = var.backend_image_path
+
+      env {
+        name  = "RAW_BUCKET"
+        value = google_storage_bucket.raw.name
+      }
+      env {
+        name  = "PROCESSED_BUCKET"
+        value = google_storage_bucket.processed.name
+      }
+      env {
+        name  = "CLOUD_SQL_INSTANCE"
+        value = google_sql_database_instance.pg.connection_name
+      }
+      env {
+        name = "CLOUD_SQL_USER"
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.db_user.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "CLOUD_SQL_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = data.google_secret_manager_secret.db_password.secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name  = "CLOUD_SQL_DB"
+        value = google_sql_database.db.name
+      }
+      env {
+        name  = "LOCATION"
+        value = var.model_region
+      }
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+      env {
+        name  = "CLOUDSQL_AUTH_PROXY_PRIVATE_IP"
+        value = "true"
+      }
+      env {
+        name  = "EMBED_MODEL"
+        value = var.embed_model
+      }
+      env {
+        name  = "GEMINI_MODEL"
+        value = var.gemini_model
+      }
+      env {
+        name  = "CONTENT_PROCESSING_TOPIC"
+        value = google_pubsub_topic.content_processing.name
+      }
+
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
+      }
+
+      resources {
+        limits = {
+          cpu    = "2"
+          memory = "4Gi"
+        }
+      }
+    }
+  }
+
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
+
+  depends_on = [
+    google_project_service.services["run.googleapis.com"],
+    google_storage_bucket.raw
+  ]
+}
