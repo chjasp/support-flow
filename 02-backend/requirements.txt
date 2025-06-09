@@ -5,6 +5,8 @@ google-cloud-firestore==2.19.0
 google-auth==2.16.1
 pydantic==2.6.0
 pydantic-settings==2.0.3
-vertexai
+vertexai==1.71.1
+google-genai==1.19.0
 python-multipart==0.0.6
 firebase-admin  # For proper authentication (optional) 
+python-dotenv
