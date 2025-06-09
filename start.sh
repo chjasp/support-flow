@@ -8,6 +8,12 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Set and export GCP environment variables
+export GOOGLE_CLOUD_PROJECT=main-dev-431619
+export GCP_LOCATION=europe-west3
+export GCP_MODEL=gemini-1.5-flash-002
+echo -e "${GREEN}✅ Using GCP Project ID: $GOOGLE_CLOUD_PROJECT${NC}"
+
 # Start processing service in background (if it exists)
 if [ -d "03-processing" ]; then
     echo -e "${YELLOW}📡 Starting processing service on port 8080...${NC}"

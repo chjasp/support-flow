@@ -9,8 +9,6 @@ import React, {
   KeyboardEvent,
 } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, Trash2, LogOut, LogIn } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -45,6 +43,7 @@ type ChatMetadata = {
 /* -------------------------------------------------------------------------- */
 
 const MAX_TITLE_LENGTH = 30;
+const SIDEBAR_TITLE_LIMIT = 20;
 const TYPING_INTERVAL_MS = 3;
 
 const CHATS_ENDPOINT = '/api/chats';
@@ -104,6 +103,11 @@ export default function HomePage() {
     });
   };
 
+  const truncateTitle = (title: string, maxLength: number = SIDEBAR_TITLE_LIMIT) => {
+    if (title.length <= maxLength) return title;
+    return title.slice(0, maxLength) + "...";
+  };
+
   const clearTypingEffect = useCallback(() => {
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -123,6 +127,8 @@ export default function HomePage() {
       activeTypingMessageId.current = null;
       setIsFetchingMessages(true);
       setCurrentMessages([]);
+
+      console.log("Session", session);
 
       try {
         const res = await authFetch(session, getMessagesEndpoint(chatId));
@@ -412,7 +418,12 @@ export default function HomePage() {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-chatgpt-main">
       {/* ------------------------------ Sidebar ----------------------------- */}
-      <aside className="chatgpt-sidebar flex flex-col border-r border-chatgpt">
+      <aside className="flex flex-col bg-chatgpt-sidebar !w-52">
+        {/* Logo */}
+        <div className="h-12 flex items-center px-4 flex-shrink-0">
+          <h1 className="text-xl font-semibold text-chatgpt">bloomlake</h1>
+        </div>
+        
         {/* Header Controls */}
         <div className="p-3 space-y-3">
           {/* Navigation Links */}
@@ -420,12 +431,15 @@ export default function HomePage() {
             <button
               onClick={handleNewChat}
               disabled={interactionDisabled}
-              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed"
             >
-              {isCreatingChat && <Loader2 className="h-4 w-4 animate-spin" />}
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
+              {isCreatingChat ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              )}
               New Chat
             </button>
             <Link
@@ -448,31 +462,31 @@ export default function HomePage() {
 
         {/* Conversation List */}
         <div className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full px-2">
+          <ScrollArea className="h-full">
             {isFetchingChats ? (
               <div className="p-4 text-center text-chatgpt-secondary text-sm">
                 Loading chats...
               </div>
             ) : (
-              <div className="space-y-0.5 pb-4">
+              <div className="space-y-1 p-2">
                 {chatList.map((chat) => (
-                  <button
+                  <div
                     key={chat.id}
-                    className={`w-full text-left px-3 h-[34px] flex items-center cursor-pointer disabled:cursor-not-allowed rounded-lg text-sm font-normal transition-all relative group ${
+                    className={`w-full text-left px-3 h-[34px] flex items-center cursor-pointer rounded-lg text-sm font-normal transition-all relative group ${
                       chat.id === activeChatId
                         ? "bg-chatgpt-hover text-chatgpt"
                         : "text-chatgpt hover:bg-chatgpt-hover"
-                    }`}
-                    onClick={() => handleSelectChat(chat.id)}
-                    disabled={interactionDisabled}
+                    } ${interactionDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                    onClick={() => !interactionDisabled && handleSelectChat(chat.id)}
+                    title={chat.title} // Show full title on hover
                   >
                     <div className="flex-1 flex items-center min-w-0">
-                      <span className="truncate flex-1">{chat.title}</span>
+                      <span className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis">{truncateTitle(chat.title)}</span>
                     </div>
                     
                     {/* Delete button - shows on hover */}
                     <button
-                      className="opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2 p-1 hover:bg-red-600/20 rounded transition-all"
+                      className="opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2 p-1 hover:bg-red-600/20 rounded transition-all duration-200 cursor-pointer"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleDeleteChat(chat.id);
@@ -485,7 +499,7 @@ export default function HomePage() {
                         <Trash2 className="h-3 w-3 text-chatgpt-secondary hover:text-red-400" />
                       )}
                     </button>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -496,13 +510,14 @@ export default function HomePage() {
       </aside>
 
       {/* --------------------------- Main Chat ----------------------------- */}
-      <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-main relative">
-        {/* User Icon - Top Right */}
-        <div className="absolute top-4 right-4 z-10">
+      <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-hover">
+        {/* Header Section */}
+        <div className="bg-chatgpt-hover h-12 flex items-center justify-end px-4 flex-shrink-0">
+          {/* User Icon */}
           {session?.user ? (
             <button
               onClick={() => signOut()}
-              className="w-8 h-8 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
+              className="w-7 h-7 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
               title={`${session.user.name ?? session.user.email} - Click to sign out`}
             >
               {session.user.name?.charAt(0) || session.user.email?.charAt(0) || "U"}
@@ -510,7 +525,7 @@ export default function HomePage() {
           ) : (
             <button
               onClick={() => signIn("google", { callbackUrl: "/" })}
-              className="w-8 h-8 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
+              className="w-7 h-7 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
               title="Sign in"
             >
               <LogIn className="h-4 w-4" />
@@ -656,8 +671,8 @@ export default function HomePage() {
         </ScrollArea>
 
         {/* -------------------------- Input --------------------------------- */}
-        <div className="sticky bottom-0 bg-chatgpt-main">
-          <div className="max-w-[768px] mx-auto p-4">
+        <div className="sticky bottom-0">
+          <div className="max-w-[768px] mx-auto pt-0 pb-4 px-4 bg-transparent">
             <div className="bg-[#2F2F2F] rounded-3xl px-4 py-4 relative">
               {/* Center - Textarea */}
               <div className="pb-10">
@@ -723,8 +738,8 @@ export default function HomePage() {
                     }
                     title="Send message"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 4l6 6h-4v10h-4V10H6l6-6z" />
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 19V5m-5 5l5-5 5 5" />
                     </svg>
                   </button>
                 </div>

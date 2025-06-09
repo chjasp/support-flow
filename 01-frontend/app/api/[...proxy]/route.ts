@@ -25,7 +25,6 @@ async function proxyRequest(req: NextRequest) {
   console.log("Original URL path:", req.nextUrl.pathname);
   console.log("Backend URL:", backendUrl);
   console.log("Method:", req.method);
-  console.log("Headers:", Object.fromEntries(req.headers.entries()));
   
   // Obtain an ID-token-enabled client for this backend URL
   const idTokenClient = await auth.getIdTokenClient(backendUrl);
@@ -76,14 +75,19 @@ async function proxyRequest(req: NextRequest) {
   if (body) {
     const bodyText = new TextDecoder().decode(body);
     console.log("Request body:", bodyText);
-    try {
-      const bodyJson = JSON.parse(bodyText);
-      console.log("Parsed request body:", JSON.stringify(bodyJson, null, 2));
-    } catch (e) {
-      console.log("Could not parse body as JSON:", e);
+    
+    // Only try to parse as JSON if the body is not empty
+    if (bodyText.trim()) {
+      try {
+        const bodyJson = JSON.parse(bodyText);
+        console.log("Parsed request body:", JSON.stringify(bodyJson, null, 2));
+      } catch (e) {
+        console.log("Could not parse body as JSON:", e);
+      }
+    } else {
+      console.log("Request body is empty, skipping JSON parsing");
     }
   }
-  console.log("Final headers to backend:", headers);
   console.log("================================");
 
   try {

@@ -8,5 +8,8 @@ type Props = {
 };
 
 export const NextAuthProvider = ({ children }: Props) => {
-  return <SessionProvider>{children}</SessionProvider>;
+  // By default, NextAuth refetches the session when the window gains focus.
+  // Setting `refetchOnWindowFocus` to `false` disables this behavior,
+  // preventing re-renders when you switch back to the application tab.
+  return <SessionProvider refetchOnWindowFocus={false}>{children}</SessionProvider>;
 }; 
