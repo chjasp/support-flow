@@ -12,9 +12,17 @@ interface MessageListProps {
   messages: Message[];
   isFetchingMessages: boolean;
   isLoading: boolean;
+  lastMessageRef: React.Ref<HTMLDivElement>;
+  bottomRef: React.Ref<HTMLDivElement>;
 }
 
-export function MessageList({ messages, isFetchingMessages, isLoading }: MessageListProps) {
+export function MessageList({
+  messages,
+  isFetchingMessages,
+  isLoading,
+  lastMessageRef,
+  bottomRef,
+}: MessageListProps) {
   if (isFetchingMessages && !messages.length) {
     return (
       <div className="flex justify-center items-center p-4 h-full">
@@ -26,13 +34,24 @@ export function MessageList({ messages, isFetchingMessages, isLoading }: Message
     );
   }
 
+  // determine last user message index
+  let targetIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].sender === 'user') {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) targetIndex = messages.length - 1; // fallback
+
   return (
-    <div className="w-full">
-      <div className="max-w-[720px] mx-auto px-4 py-5 space-y-6">
-        {messages.map((m) => (
+    <div className="min-h-full flex flex-col [overflow-anchor:none]">
+      <div className="w-full max-w-[720px] mx-auto px-4 pt-16 pb-5 space-y-6 mt-auto">
+        {messages.map((m, index) => (
           <div
             key={m.id}
-            className="w-full"
+            ref={index === targetIndex ? lastMessageRef : null}
+            className="w-full scroll-mt-6"
           >
             {m.sender === "user" ? (
               <div className="flex justify-end">
@@ -135,6 +154,7 @@ export function MessageList({ messages, isFetchingMessages, isLoading }: Message
           </div>
         ))}
 
+        {/* Show "Thinking..." directly under the latest user message */}
         {isLoading && (
           <div className="flex justify-start">
             <div className="px-4 py-3">
@@ -145,6 +165,12 @@ export function MessageList({ messages, isFetchingMessages, isLoading }: Message
             </div>
           </div>
         )}
+
+        {/* Persistent spacer to keep older messages out of view */}
+        <div className="h-[70vh] w-full flex-shrink-0 pointer-events-none" />
+
+        {/* Always-present terminator element to allow reliable scrolling */}
+        <div ref={bottomRef} />
       </div>
     </div>
   );
