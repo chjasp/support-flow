@@ -6,7 +6,6 @@ import React, {
   useRef,
   useCallback,
   useMemo,
-  KeyboardEvent,
 } from "react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -44,7 +43,7 @@ type ChatMetadata = {
 
 const MAX_TITLE_LENGTH = 30;
 const SIDEBAR_TITLE_LIMIT = 20;
-const TYPING_INTERVAL_MS = 3;
+const TYPING_INTERVAL_MS = 8; 
 
 const CHATS_ENDPOINT = '/api/chats';
 const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
@@ -65,30 +64,29 @@ export default function HomePage() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [isFetchingChats, setIsFetchingChats] = useState(true);
   const [isFetchingMessages, setIsFetchingMessages] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
   const [isDeletingChat, setIsDeletingChat] = useState(false);
 
   /* ------------------------------ Refs ------------------------------------ */
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeTypingMessageId = useRef<string | null>(null);
-  const scrollViewportRef = useRef<HTMLElement | null>(null);
-  const lastScrollTopRef = useRef(0);
-  const userHasScrolledUpRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   /* ------------------------- Derived Booleans ----------------------------- */
   const interactionDisabled = useMemo(
     () =>
       isLoading ||
+      isGenerating ||
       isFetchingMessages ||
       isFetchingChats ||
       isCreatingChat ||
-      isDeletingChat ||
-      !!activeTypingMessageId.current,
+      isDeletingChat,
     [
       isLoading,
+      isGenerating,
       isFetchingMessages,
       isFetchingChats,
       isCreatingChat,
@@ -99,28 +97,6 @@ export default function HomePage() {
   /* ------------------------------------------------------------------------ */
   /*                               Utilities                                  */
   /* ------------------------------------------------------------------------ */
-
-  /**
-   * Scroll helper that respects the user's manual scrolling while the assistant
-   * is still typing. If the user has scrolled up during an active typing
-   * animation we skip automatic scrolling until the typing is finished.
-   *
-   * Passing `force = true` overrides this behaviour (e.g. when switching
-   * chats where it is desirable to always start at the bottom).
-   */
-  const scrollToBottom = (
-    behavior: ScrollBehavior = "smooth",
-    force: boolean = false,
-  ) => {
-    // If the user has scrolled up, never auto-scroll unless we explicitly force.
-    if (!force && userHasScrolledUpRef.current) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior });
-    });
-  };
 
   const truncateTitle = (title: string, maxLength: number = SIDEBAR_TITLE_LIMIT) => {
     if (title.length <= maxLength) return title;
@@ -147,8 +123,6 @@ export default function HomePage() {
       setIsFetchingMessages(true);
       setCurrentMessages([]);
 
-      console.log("Session", session);
-
       try {
         const res = await authFetch(session, getMessagesEndpoint(chatId));
 
@@ -166,7 +140,6 @@ export default function HomePage() {
           (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
         );
         setCurrentMessages(data);
-        scrollToBottom("instant", true);
       } catch (err) {
         if (!(err instanceof Error && err.message.includes("404"))) {
           console.error("Error fetching messages:", err);
@@ -212,47 +185,6 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  /* -------------------------- Scroll Detection ---------------------------- */
-
-  useEffect(() => {
-    const scrollArea = document.querySelector(
-      '#message-scroll-area [data-slot="scroll-area-viewport"]',
-    ) as HTMLElement | null;
-
-    if (!scrollArea) return;
-
-    scrollViewportRef.current = scrollArea;
-
-    const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = scrollArea;
-
-      /* -------- detect direction -------- */
-      const isScrollingUp = scrollTop < lastScrollTopRef.current;
-
-      if (isScrollingUp) {
-        // User moved viewport upward – lock auto-scroll.
-        userHasScrolledUpRef.current = true;
-
-        // Cancel any ongoing smooth scroll animation that might have been
-        // triggered before the user interaction. Jump immediately to the
-        // current position so the browser stops autoscrolling.
-        scrollArea.scrollTo({ top: scrollTop, behavior: 'auto' });
-      } else {
-        // If they scroll down and reach the bottom again, unlock.
-        const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
-        if (isAtBottom) {
-          userHasScrolledUpRef.current = false;
-        }
-      }
-
-      lastScrollTopRef.current = scrollTop; // keep it up to date
-    };
-
-    /* Use passive listeners so scrolling stays silky-smooth */
-    scrollArea.addEventListener('scroll', handleScroll, { passive: true });
-    return () => scrollArea.removeEventListener('scroll', handleScroll);
-  }, []);
-
   /* ------------------------------------------------------------------------ */
   /*                            Chat Operations                               */
   /* ------------------------------------------------------------------------ */
@@ -282,7 +214,6 @@ export default function HomePage() {
       setActiveChatId(id);
       setCurrentMessages(messages || []);
       setInputValue("");
-      scrollToBottom("instant", true);
     } catch (err) {
       console.error("Error creating new chat:", err);
     } finally {
@@ -300,53 +231,39 @@ export default function HomePage() {
   };
 
   const handleDeleteChat = async (chatId: string) => {
-    if (!chatId || isDeletingChat) return;
-
-    if (activeTypingMessageId.current && chatId === activeChatId) {
-      clearTypingEffect();
-      activeTypingMessageId.current = null;
-    }
+    if (isDeletingChat) return;
 
     setIsDeletingChat(true);
+
     try {
-      const res = await authFetch(session, deleteChatEndpoint(chatId), { method: "DELETE" });
+      const res = await authFetch(session, deleteChatEndpoint(chatId), {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`Failed to delete chat: ${res.statusText}`);
 
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Failed to delete chat: ${errText || res.statusText}`);
-      }
+      setChatList((prev) => prev.filter((c) => c.id !== chatId));
 
-      const remaining = chatList.filter((c) => c.id !== chatId);
-      setChatList(remaining);
-
-      if (activeChatId === chatId) {
+      if (chatId === activeChatId) {
+        const remaining = chatList.filter((c) => c.id !== chatId);
         if (remaining.length) {
           setActiveChatId(remaining[0].id);
           await fetchMessages(remaining[0].id);
         } else {
-          setActiveChatId(null);
-          setCurrentMessages([]);
           await handleNewChat();
         }
       }
     } catch (err) {
       console.error("Error deleting chat:", err);
-      alert(
-        `Failed to delete chat: ${err instanceof Error ? err.message : "Unknown"}`,
-      );
     } finally {
       setIsDeletingChat(false);
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /*                             Message Send                                 */
-  /* ------------------------------------------------------------------------ */
-
   const startTypingEffect = useCallback(
     (messageId: string, fullText: string) => {
       clearTypingEffect();
       activeTypingMessageId.current = messageId;
+      setIsGenerating(true);
 
       let idx = 0;
       const typeStep = () => {
@@ -358,17 +275,13 @@ export default function HomePage() {
             m.id === messageId ? { ...m, text: fullText.slice(0, idx) } : m,
           ),
         );
-        scrollToBottom("auto");
 
         if (idx < fullText.length) {
           typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
         } else {
           activeTypingMessageId.current = null;
           typingTimeoutRef.current = null;
-          // Only auto-scroll at the end if the user is still at (or near) the bottom.
-          if (!userHasScrolledUpRef.current) {
-            scrollToBottom("auto");
-          }
+          setIsGenerating(false);
         }
       };
 
@@ -376,6 +289,22 @@ export default function HomePage() {
     },
     [clearTypingEffect],
   );
+
+  const handleStopGeneration = useCallback(() => {
+    // Cancel the API request if it's ongoing
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // Clear the typing effect
+    clearTypingEffect();
+    activeTypingMessageId.current = null;
+
+    // Reset loading and generating states
+    setIsLoading(false);
+    setIsGenerating(false);
+  }, [clearTypingEffect]);
 
   const handleSendMessage = async () => {
     const trimmed = inputValue.trim();
@@ -391,15 +320,18 @@ export default function HomePage() {
     };
 
     setCurrentMessages((prev) => [...prev, optimistic]);
-    scrollToBottom();
 
     setIsLoading(true);
 
     try {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       const res = await authFetch(session, postMessageEndpoint(activeChatId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
+        signal: abortController.signal,
       });
 
       if (!res.ok) {
@@ -420,7 +352,6 @@ export default function HomePage() {
         user_message,
         placeholder,
       ]);
-      scrollToBottom();
 
       setTimeout(() => startTypingEffect(bot_message.id, bot_message.text), 50);
 
@@ -440,39 +371,32 @@ export default function HomePage() {
         return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
       });
     } catch (err) {
-      console.error("Failed to send message:", err);
+      // Handle aborted requests (user clicked stop)
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log("Message generation stopped by user");
+        setCurrentMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+      } else {
+        console.error("Failed to send message:", err);
 
-      const errorMsg: Message = {
-        id: `error-${Date.now()}`,
-        text: `Sorry, failed to process message. ${
-          err instanceof Error ? err.message : ""
-        }`,
-        sender: "bot",
-        timestamp: new Date().toISOString(),
-      };
+        const errorMsg: Message = {
+          id: `error-${Date.now()}`,
+          text: `Sorry, failed to process message. ${
+            err instanceof Error ? err.message : ""
+          }`,
+          sender: "bot",
+          timestamp: new Date().toISOString(),
+        };
 
-      setCurrentMessages((prev) => [
-        ...prev.filter((m) => m.id !== optimistic.id),
-        errorMsg,
-      ]);
-      scrollToBottom();
+        setCurrentMessages((prev) => [
+          ...prev.filter((m) => m.id !== optimistic.id),
+          errorMsg,
+        ]);
+      }
       setIsLoading(false);
+    } finally {
+      abortControllerRef.current = null;
     }
   };
-
-  /* ------------------------------------------------------------------------ */
-  /*                             Event Helpers                                */
-  /* ------------------------------------------------------------------------ */
-
-  const handleKeyPress = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!activeTypingMessageId.current) handleSendMessage();
-    }
-  };
-
-  const activeChatTitle =
-    chatList.find((c) => c.id === activeChatId)?.title ?? "Chat";
 
   /* ------------------------------------------------------------------------ */
   /*                                 Render                                   */
@@ -727,8 +651,6 @@ export default function HomePage() {
                   </div>
                 </div>
               )}
-
-              <div ref={messagesEndRef} />
             </div>
           </div>
         </ScrollArea>
@@ -786,24 +708,43 @@ export default function HomePage() {
                     </svg>
                   </button>
 
-                  {/* Send Button */}
+                  {/* Send/Stop Button */}
                   <button
                     className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                      inputValue.trim() && !interactionDisabled && activeChatId
+                      (isLoading || isGenerating)
                         ? "bg-white text-black hover:bg-gray-200 cursor-pointer"
-                        : "bg-[#676767] text-[#2F2F2F] cursor-not-allowed"
+                        : inputValue.trim() && !interactionDisabled && activeChatId
+                          ? "bg-white text-black hover:bg-gray-200 cursor-pointer"
+                          : "bg-[#676767] text-[#2F2F2F] cursor-not-allowed"
                     }`}
-                    onClick={handleSendMessage}
-                    disabled={
-                      interactionDisabled ||
-                      !activeChatId ||
-                      !inputValue.trim()
+                    onClick={
+                      (isLoading || isGenerating)
+                        ? handleStopGeneration
+                        : handleSendMessage
                     }
-                    title="Send message"
+                    disabled={
+                      (!isLoading && !isGenerating) &&
+                      (interactionDisabled ||
+                      !activeChatId ||
+                      !inputValue.trim())
+                    }
+                    title={
+                      (isLoading || isGenerating)
+                        ? "Stop generating"
+                        : "Send message"
+                    }
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M12 19V5m-5 5l5-5 5 5" />
-                    </svg>
+                    {(isLoading || isGenerating) ? (
+                      /* Stop icon */
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                      </svg>
+                    ) : (
+                      /* Send icon */
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 19V5m-5 5l5-5 5 5" />
+                      </svg>
+                    )}
                   </button>
                 </div>
               </div>
