@@ -74,6 +74,9 @@ export default function HomePage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeTypingMessageId = useRef<string | null>(null);
+  const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const lastScrollTopRef = useRef(0);
+  const userHasScrolledUpRef = useRef(false);
 
   /* ------------------------- Derived Booleans ----------------------------- */
   const interactionDisabled = useMemo(
@@ -97,7 +100,23 @@ export default function HomePage() {
   /*                               Utilities                                  */
   /* ------------------------------------------------------------------------ */
 
-  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+  /**
+   * Scroll helper that respects the user's manual scrolling while the assistant
+   * is still typing. If the user has scrolled up during an active typing
+   * animation we skip automatic scrolling until the typing is finished.
+   *
+   * Passing `force = true` overrides this behaviour (e.g. when switching
+   * chats where it is desirable to always start at the bottom).
+   */
+  const scrollToBottom = (
+    behavior: ScrollBehavior = "smooth",
+    force: boolean = false,
+  ) => {
+    // If the user has scrolled up, never auto-scroll unless we explicitly force.
+    if (!force && userHasScrolledUpRef.current) {
+      return;
+    }
+
     requestAnimationFrame(() => {
       messagesEndRef.current?.scrollIntoView({ behavior });
     });
@@ -147,7 +166,7 @@ export default function HomePage() {
           (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
         );
         setCurrentMessages(data);
-        scrollToBottom("instant");
+        scrollToBottom("instant", true);
       } catch (err) {
         if (!(err instanceof Error && err.message.includes("404"))) {
           console.error("Error fetching messages:", err);
@@ -193,6 +212,47 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
+  /* -------------------------- Scroll Detection ---------------------------- */
+
+  useEffect(() => {
+    const scrollArea = document.querySelector(
+      '#message-scroll-area [data-slot="scroll-area-viewport"]',
+    ) as HTMLElement | null;
+
+    if (!scrollArea) return;
+
+    scrollViewportRef.current = scrollArea;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = scrollArea;
+
+      /* -------- detect direction -------- */
+      const isScrollingUp = scrollTop < lastScrollTopRef.current;
+
+      if (isScrollingUp) {
+        // User moved viewport upward – lock auto-scroll.
+        userHasScrolledUpRef.current = true;
+
+        // Cancel any ongoing smooth scroll animation that might have been
+        // triggered before the user interaction. Jump immediately to the
+        // current position so the browser stops autoscrolling.
+        scrollArea.scrollTo({ top: scrollTop, behavior: 'auto' });
+      } else {
+        // If they scroll down and reach the bottom again, unlock.
+        const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+        if (isAtBottom) {
+          userHasScrolledUpRef.current = false;
+        }
+      }
+
+      lastScrollTopRef.current = scrollTop; // keep it up to date
+    };
+
+    /* Use passive listeners so scrolling stays silky-smooth */
+    scrollArea.addEventListener('scroll', handleScroll, { passive: true });
+    return () => scrollArea.removeEventListener('scroll', handleScroll);
+  }, []);
+
   /* ------------------------------------------------------------------------ */
   /*                            Chat Operations                               */
   /* ------------------------------------------------------------------------ */
@@ -222,7 +282,7 @@ export default function HomePage() {
       setActiveChatId(id);
       setCurrentMessages(messages || []);
       setInputValue("");
-      scrollToBottom("instant");
+      scrollToBottom("instant", true);
     } catch (err) {
       console.error("Error creating new chat:", err);
     } finally {
@@ -298,14 +358,17 @@ export default function HomePage() {
             m.id === messageId ? { ...m, text: fullText.slice(0, idx) } : m,
           ),
         );
-        scrollToBottom("smooth");
+        scrollToBottom("auto");
 
         if (idx < fullText.length) {
           typingTimeoutRef.current = setTimeout(typeStep, TYPING_INTERVAL_MS);
         } else {
           activeTypingMessageId.current = null;
           typingTimeoutRef.current = null;
-          scrollToBottom("smooth");
+          // Only auto-scroll at the end if the user is still at (or near) the bottom.
+          if (!userHasScrolledUpRef.current) {
+            scrollToBottom("auto");
+          }
         }
       };
 
