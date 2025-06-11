@@ -36,6 +36,7 @@ resource "google_project_iam_member" "sa_sql" {
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.ingester.email}"
+  count = 0
 }
 
 # --- Add this resource ---
@@ -46,6 +47,7 @@ resource "google_project_iam_member" "sa_eventarc_receiver" {
   member  = "serviceAccount:${google_service_account.ingester.email}"
 
   depends_on = [google_service_account.ingester]
+  count = 0
 }
 # -------------------------
 
@@ -77,11 +79,12 @@ resource "google_compute_network" "vpc" {
   auto_create_subnetworks = false
 }
 
-resource "google_compute_subnetwork" "subnet" {
-  name          = "egress-net-${var.region}"
-  ip_cidr_range = "10.255.0.0/24"
+resource "google_compute_subnetwork" "subnet_ew1" {
+  name          = "egress-net-europe-west1"
+  ip_cidr_range = "10.255.1.0/24"
   network       = google_compute_network.vpc.id
-  region        = var.region
+  region        = "europe-west1"
+  private_ip_google_access = true
 }
 
 # --- FIX: Add Private Services Access connection resources ---
@@ -102,200 +105,6 @@ resource "google_service_networking_connection" "private_vpc_connection" {
   # Ensure the network and allocation exist first, and the API is enabled
   depends_on = [
     google_project_service.services["servicenetworking.googleapis.com"]
-  ]
-}
-# -------------------------------------------------------------
-
-# ----------  Cloud SQL (PostgreSQL 16 + pgvector) ------------------------
-
-resource "google_sql_database_instance" "pg" {
-  name             = "docs-pg-db"
-  database_version = "POSTGRES_16"
-  region           = var.region
-
-  settings {
-    tier = "db-custom-1-3840"
-    edition = "ENTERPRISE"
-
-    ip_configuration {
-      ssl_mode                                      = "ENCRYPTED_ONLY"
-      ipv4_enabled                                  = true
-      private_network                               = google_compute_network.vpc.id
-      enable_private_path_for_google_cloud_services = true
-
-      authorized_networks {
-        value = var.local_dev_ip
-        name  = "local-dev"
-      }
-    }
-  }
-
-  # Ensure the private connection is established first
-  depends_on = [google_service_networking_connection.private_vpc_connection]
-}
-
-resource "google_sql_database" "db" {
-  name     = "docs"
-  instance = google_sql_database_instance.pg.name
-}
-
-# ----------  Cloud Run service ------------------------------------------
-
-resource "google_cloud_run_v2_service" "document-ingester" {
-  name     = "document-ingester"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
-  deletion_protection = false
-
-  template {
-    service_account                  = google_service_account.ingester.email
-    max_instance_request_concurrency = 80
-
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 5
-    }
-
-    volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [google_sql_database_instance.pg.connection_name]
-      }
-    }
-
-    vpc_access {
-      network_interfaces {
-        network    = google_compute_network.vpc.id
-        subnetwork = google_compute_subnetwork.subnet.id
-      }
-    }
-
-    containers {
-      image = var.ingester_image_path
-
-      env {
-        name  = "RAW_BUCKET"
-        value = google_storage_bucket.raw.name
-      }
-      env {
-        name  = "PROCESSED_BUCKET"
-        value = google_storage_bucket.processed.name
-      }
-      env {
-        name  = "CLOUD_SQL_INSTANCE"
-        value = google_sql_database_instance.pg.connection_name
-      }
-      env {
-        name = "CLOUD_SQL_USER"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.db_user.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "CLOUD_SQL_PASSWORD"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.db_password.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name  = "CLOUD_SQL_DB"
-        value = google_sql_database.db.name
-      }
-      env {
-        name  = "LOCATION"
-        value = var.model_region
-      }
-      env {
-        name  = "GOOGLE_CLOUD_PROJECT"
-        value = var.project_id
-      }
-      env {
-        name  = "CLOUDSQL_AUTH_PROXY_PRIVATE_IP"
-        value = "true"
-      }
-      env {
-        name  = "EMBED_MODEL"
-        value = var.embed_model
-      }
-      env {
-        name  = "GEMINI_MODEL"
-        value = var.gemini_model
-      }
-      env {
-        name  = "CONTENT_PROCESSING_TOPIC"
-        value = google_pubsub_topic.content_processing.name
-      }
-
-      volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
-      }
-
-      resources {
-        limits = {
-          cpu    = "2"
-          memory = "4Gi"
-        }
-      }
-    }
-  }
-
-  traffic {
-    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
-    percent = 100
-  }
-}
-
-
-# ----------  Eventarc trigger -------------------------------------------
-
-# Grant the trigger's identity (ingester SA) permission to invoke Cloud Run
-resource "google_cloud_run_v2_service_iam_member" "ingester_invoker" {
-  project  = google_cloud_run_v2_service.document-ingester.project
-  location = google_cloud_run_v2_service.document-ingester.location
-  name     = google_cloud_run_v2_service.document-ingester.name
-
-  role   = "roles/run.invoker"
-  member = "serviceAccount:${google_service_account.ingester.email}"
-
-  depends_on = [google_cloud_run_v2_service.document-ingester]
-}
-# -----------------------------------------------------------------------
-
-resource "google_eventarc_trigger" "gcs_finalize" {
-  project  = var.project_id
-  name     = "ingest-on-finalize"
-  location = var.region
-  # --- Event matching criteria ---
-  matching_criteria {
-    attribute = "type"
-    value     = "google.cloud.storage.object.v1.finalized"
-  }
-  matching_criteria {
-    attribute = "bucket"
-    value     = google_storage_bucket.raw.name
-  }
-  # --- Use the ingester service account to publish events ---
-  # This SA needs roles/pubsub.publisher on the ingest_transport topic
-  service_account = google_service_account.ingester.email # Trigger uses this SA
-
-  # --- Destination is now the explicitly managed transport topic ---
-  destination {
-    cloud_run_service {
-      service = google_cloud_run_v2_service.document-ingester.name
-      region  = var.region
-    }
-  }
-
-  # Ensure necessary permissions are granted before creating the trigger
-  depends_on = [
-    google_project_iam_member.sa_eventarc_receiver
   ]
 }
 
@@ -326,6 +135,7 @@ resource "google_secret_manager_secret_iam_member" "sa_secret_accessor_user" {
   project   = data.google_secret_manager_secret.db_user.project
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.ingester.email}"
+  count = 0
 }
 
 resource "google_secret_manager_secret_iam_member" "sa_secret_accessor_password" {
@@ -333,6 +143,7 @@ resource "google_secret_manager_secret_iam_member" "sa_secret_accessor_password"
   project   = data.google_secret_manager_secret.db_password.project
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.ingester.email}"
+  count = 0
 }
 
 # ----------  Enable APIs -------------------------------------------------
@@ -456,7 +267,7 @@ resource "google_pubsub_subscription" "content_processing" {
   message_retention_duration = "604800s" # 7 days
 
   push_config {
-    push_endpoint = "${google_cloud_run_v2_service.document-ingester.uri}/process-content"
+    push_endpoint = "${google_cloud_run_v2_service.backend.uri}/process-content"
     
     # Authentication for push endpoint
     oidc_token {
@@ -478,7 +289,7 @@ resource "google_pubsub_subscription" "content_processing" {
 
   depends_on = [
     google_pubsub_topic.content_processing,
-    google_cloud_run_v2_service.document-ingester,
+    google_cloud_run_v2_service.backend,
     google_pubsub_topic.dlq_topic
   ]
 }
@@ -495,14 +306,14 @@ resource "google_pubsub_topic_iam_member" "content_processing_publisher" {
 
 # Grant Pub/Sub service account permission to invoke the Cloud Run service
 resource "google_cloud_run_v2_service_iam_member" "pubsub_invoker" {
-  project  = google_cloud_run_v2_service.document-ingester.project
-  location = google_cloud_run_v2_service.document-ingester.location
-  name     = google_cloud_run_v2_service.document-ingester.name
+  project  = google_cloud_run_v2_service.backend.project
+  location = google_cloud_run_v2_service.backend.location
+  name     = google_cloud_run_v2_service.backend.name
 
   role   = "roles/run.invoker"
   member = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
 
-  depends_on = [google_cloud_run_v2_service.document-ingester]
+  depends_on = [google_cloud_run_v2_service.backend]
 }
 
 # -----------------------------------------------------------------------
@@ -529,6 +340,14 @@ resource "google_cloud_run_v2_service" "frontend" {
     scaling {
       min_instance_count = 0
       max_instance_count = 2
+    }
+
+    vpc_access {
+      network_interfaces {
+        network    = google_compute_network.vpc.id
+        subnetwork = google_compute_subnetwork.subnet_ew1.id
+      }
+      egress = "ALL_TRAFFIC"
     }
 
     containers {
@@ -646,7 +465,6 @@ resource "google_secret_manager_secret_iam_member" "frontend_secret_accessor_nex
 # --- End Secret Accessor permissions ---
 
 # --- Keep the backend invoker permission ---
-# Allow the *frontend* service to call the backend (private ingress)
 resource "google_cloud_run_v2_service_iam_member" "backend_invoker_frontend" {
   project  = google_cloud_run_v2_service.backend.project
   location = google_cloud_run_v2_service.backend.location
@@ -657,23 +475,11 @@ resource "google_cloud_run_v2_service_iam_member" "backend_invoker_frontend" {
 }
 
 # Secret-accessor bindings (reuse earlier pattern)
-resource "google_secret_manager_secret_iam_member" "backend_secret_accessor_user" {
-  secret_id = data.google_secret_manager_secret.db_user.id
-  project   = data.google_secret_manager_secret.db_user.project
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.backend.email}"
-}
-resource "google_secret_manager_secret_iam_member" "backend_secret_accessor_password" {
-  secret_id = data.google_secret_manager_secret.db_password.id
-  project   = data.google_secret_manager_secret.db_password.project
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.backend.email}"
-}
 resource "google_secret_manager_secret_iam_member" "backend_secret_accessor_google_id" {
   secret_id = "backend-google-client-id"
   project   = var.project_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.backend.email}"
+  member    = "serviceAccount:${google_service_account.ingester.email}"
 }
 
 # ───────────────────────────────────────────────
@@ -683,7 +489,7 @@ resource "google_secret_manager_secret_iam_member" "backend_secret_accessor_goog
 resource "google_cloud_run_v2_service" "backend" {
   name     = "backend"
   location = "europe-west1"
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY" # Only allow internal traffic
+  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY" # Allow public ingress
   deletion_protection = false
 
   template {
@@ -691,26 +497,20 @@ resource "google_cloud_run_v2_service" "backend" {
 
     scaling {
       min_instance_count = 1
-      max_instance_count = 2
-    }
-
-    volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [google_sql_database_instance.pg.connection_name]
-      }
+      max_instance_count = 4
     }
 
     vpc_access {
       network_interfaces {
         network    = google_compute_network.vpc.id
-        subnetwork = google_compute_subnetwork.subnet.id
+        subnetwork = google_compute_subnetwork.subnet_ew1.id
       }
     }
 
     containers {
       image = var.backend_image_path
 
+      # Core environment configuration
       env {
         name  = "RAW_BUCKET"
         value = google_storage_bucket.raw.name
@@ -720,33 +520,11 @@ resource "google_cloud_run_v2_service" "backend" {
         value = google_storage_bucket.processed.name
       }
       env {
-        name  = "CLOUD_SQL_INSTANCE"
-        value = google_sql_database_instance.pg.connection_name
-      }
-      env {
-        name = "CLOUD_SQL_USER"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.db_user.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "CLOUD_SQL_PASSWORD"
-        value_source {
-          secret_key_ref {
-            secret  = data.google_secret_manager_secret.db_password.secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name  = "CLOUD_SQL_DB"
-        value = google_sql_database.db.name
-      }
-      env {
         name  = "LOCATION"
+        value = var.model_region
+      }
+      env {
+        name  = "GCP_LOCATION"
         value = var.model_region
       }
       env {
@@ -754,8 +532,8 @@ resource "google_cloud_run_v2_service" "backend" {
         value = var.project_id
       }
       env {
-        name  = "CLOUDSQL_AUTH_PROXY_PRIVATE_IP"
-        value = "true"
+        name  = "GCP_MODEL"
+        value = var.gemini_model
       }
       env {
         name  = "EMBED_MODEL"
@@ -768,11 +546,6 @@ resource "google_cloud_run_v2_service" "backend" {
       env {
         name  = "CONTENT_PROCESSING_TOPIC"
         value = google_pubsub_topic.content_processing.name
-      }
-
-      volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
       }
 
       resources {
@@ -793,4 +566,22 @@ resource "google_cloud_run_v2_service" "backend" {
     google_project_service.services["run.googleapis.com"],
     google_storage_bucket.raw
   ]
+}
+
+# Add public invoker binding for backend
+resource "google_cloud_run_v2_service_iam_member" "backend_public_invoker" {
+  project  = google_cloud_run_v2_service.backend.project
+  location = google_cloud_run_v2_service.backend.location
+  name     = google_cloud_run_v2_service.backend.name
+
+  role   = "roles/run.invoker"
+  member = "allUsers"
+
+  depends_on = [google_cloud_run_v2_service.backend]
+}
+
+resource "google_project_iam_member" "sa_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.ingester.email}"
 }

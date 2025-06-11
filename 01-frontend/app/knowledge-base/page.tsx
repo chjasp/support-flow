@@ -407,10 +407,8 @@ export default function KnowledgeBasePage() {
       if (!uploadResponse.ok) {
         // Attempt to get error details from GCS response
         let gcsErrorDetails = `GCS Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`;
-        try {
-            const errorText = await uploadResponse.text();
-            gcsErrorDetails += ` - ${errorText}`;
-        } catch { /* Ignore if can't read text */ }
+        const errorText = await uploadResponse.text();
+        gcsErrorDetails += ` - ${errorText || 'No further details'}`;
         throw new Error(gcsErrorDetails);
       }
       console.log(`Successfully uploaded text content as ${filename} to ${gcsUri}`);
@@ -462,7 +460,7 @@ export default function KnowledgeBasePage() {
       });
 
       if (!response.ok) {
-        let errorText = await response.text();
+        const errorText = await response.text();
         throw new Error(
           `Failed to process URLs: ${response.status} ${response.statusText} ${errorText}`
         );
