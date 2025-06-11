@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import { Loader2, Trash2 } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ChatMetadata } from '@/types';
@@ -35,6 +36,8 @@ export function Sidebar({
   isFetchingChats,
   interactionDisabled,
 }: SidebarProps) {
+  const { data: session, status } = useSession();
+
   return (
     <aside className="flex flex-col bg-chatgpt-sidebar !w-52">
       {/* Logo */}
@@ -43,7 +46,7 @@ export function Sidebar({
       </div>
       
       {/* Header Controls */}
-      <div className="p-3 space-y-3">
+      <div className="px-2 py-3 space-y-3">
         {/* Navigation Links */}
         <div className="flex flex-col gap-1 mb-2">
           <button
@@ -60,28 +63,43 @@ export function Sidebar({
             )}
             New Chat
           </button>
-          <Link
-            href="/knowledge-base"
-            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors"
+          <button
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors cursor-pointer"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
             Upload
-          </Link>
+          </button>
+          <button
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors cursor-pointer"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+            </svg>
+            Data
+          </button>
+          <button
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-chatgpt hover:bg-chatgpt-hover rounded-lg transition-colors cursor-pointer"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+            Agents
+          </button>
         </div>
 
       </div>
 
       {/* Chats Header */}
-      <div className="px-3 py-2">
+      <div className="px-5 py-2">
         <h3 className="text-sm text-chatgpt-secondary font-normal">Chats</h3>
       </div>
 
       {/* Conversation List */}
       <div className="flex-1 overflow-hidden">
         <ScrollArea className="h-full">
-          {isFetchingChats ? (
+          {(isFetchingChats && session?.user) ? (
             <div className="p-4 text-center text-chatgpt-secondary text-sm">
               Loading chats...
             </div>
@@ -92,7 +110,7 @@ export function Sidebar({
                   key={chat.id}
                   className={`w-full text-left px-3 h-[34px] flex items-center cursor-pointer rounded-lg text-sm font-normal transition-all relative group ${
                     chat.id === activeChatId
-                      ? "bg-chatgpt-hover text-chatgpt"
+                      ? "bg-chatgpt-hover text-chatgpt rounded-r-none"
                       : "text-chatgpt hover:bg-chatgpt-hover"
                   } ${interactionDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                   onClick={() => !interactionDisabled && handleSelectChat(chat.id)}

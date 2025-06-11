@@ -26,21 +26,13 @@ function ChatHeader() {
   const { data: session } = useSession();
   return (
     <div className="bg-chatgpt-hover h-12 flex items-center justify-end px-4 flex-shrink-0">
-      {session?.user ? (
+      {session?.user && (
         <button
           onClick={() => signOut()}
           className="w-7 h-7 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
           title={`${session.user.name ?? session.user.email} - Click to sign out`}
         >
           {session.user.name?.charAt(0) || session.user.email?.charAt(0) || 'U'}
-        </button>
-      ) : (
-        <button
-          onClick={() => signIn('google', { callbackUrl: '/' })}
-          className="w-7 h-7 bg-chatgpt-accent rounded-full flex items-center justify-center text-sm font-medium text-white hover:opacity-80 transition-opacity"
-          title="Sign in"
-        >
-          <LogIn className="h-4 w-4" />
         </button>
       )}
     </div>
@@ -60,6 +52,7 @@ export function ChatPanel({
   activeChatId,
   activeTypingMessageId,
 }: ChatPanelProps) {
+  const { data: session, status } = useSession();
   const lastMessageRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +61,23 @@ export function ChatPanel({
       lastMessageRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }, [currentMessages.length]);
+
+  if (status !== 'loading' && !session?.user) {
+    return (
+      <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-hover">
+        <ChatHeader />
+        <div className="flex-1 flex items-center justify-center -mt-20">
+          <button
+            onClick={() => signIn('google', { callbackUrl: '/' })}
+            className="bg-chatgpt-sidebar hover:bg-chatgpt-hover transition-colors text-chatgpt font-medium flex items-center gap-2 px-6 py-3 rounded-lg cursor-pointer"
+          >
+            <LogIn className="w-5 h-5" />
+            <span>Login</span>
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-hover">
