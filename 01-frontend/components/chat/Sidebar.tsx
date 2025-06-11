@@ -110,7 +110,7 @@ export function Sidebar({
                   key={chat.id}
                   className={`w-full text-left px-3 h-[34px] flex items-center cursor-pointer rounded-lg text-sm font-normal transition-all relative group ${
                     chat.id === activeChatId
-                      ? "bg-chatgpt-hover text-chatgpt rounded-r-none"
+                      ? "bg-chatgpt-hover text-chatgpt"
                       : "text-chatgpt hover:bg-chatgpt-hover"
                   } ${interactionDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                   onClick={() => !interactionDisabled && handleSelectChat(chat.id)}

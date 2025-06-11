@@ -28,7 +28,7 @@ export function ChatInput({
   return (
     <div className="sticky bottom-0">
       <div className="max-w-[768px] mx-auto pt-0 pb-4 px-4 bg-transparent">
-        <div className="bg-[#2F2F2F] rounded-3xl px-4 py-4 relative">
+        <div className="bg-[#353535] rounded-3xl px-4 py-4 relative">
           {/* Center - Textarea */}
           <div className="pb-10">
             <textarea
