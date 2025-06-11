@@ -53,7 +53,7 @@ async function proxyRequest(req: NextRequest) {
   const body = hasBody ? await req.clone().arrayBuffer() : undefined;
   
   // Convert body to appropriate format for the Google Auth library
-  let requestData: any = undefined;
+  let requestData: unknown = undefined;
   if (body) {
     const contentType = req.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
@@ -61,7 +61,7 @@ async function proxyRequest(req: NextRequest) {
       const bodyText = new TextDecoder().decode(body);
       try {
         requestData = JSON.parse(bodyText);
-      } catch (e) {
+      } catch {
         // If JSON parsing fails, send as string
         requestData = bodyText;
       }
@@ -125,26 +125,43 @@ async function proxyRequest(req: NextRequest) {
         )
       },
     });
-  } catch (error) {
+  } catch (error: unknown) {
     // ===== LOGGING POINT 3: Error Details =====
     console.log("===== BACKEND REQUEST ERROR =====");
     console.log("Error object:", error);
     if (error && typeof error === 'object') {
       console.log("Error keys:", Object.keys(error));
-      if ('response' in error && error.response && typeof error.response === 'object') {
-        console.log("Error response status:", (error.response as any).status);
-        console.log("Error response data:", (error.response as any).data);
-        console.log("Error response headers:", (error.response as any).headers);
+
+      type ErrorWithConfig = {
+        response?: {
+          status?: number;
+          data?: unknown;
+          headers?: unknown;
+        };
+        config?: {
+          url?: string;
+          method?: string;
+          data?: unknown;
+        };
+      };
+
+      const err = error as ErrorWithConfig;
+
+      if (err.response) {
+        console.log("Error response status:", err.response.status);
+        console.log("Error response data:", err.response.data);
+        console.log("Error response headers:", err.response.headers);
       }
-      if ('config' in error && error.config && typeof error.config === 'object') {
-        console.log("Error config URL:", (error.config as any).url);
-        console.log("Error config method:", (error.config as any).method);
-        console.log("Error config data:", (error.config as any).data);
+      if (err.config) {
+        console.log("Error config URL:", err.config.url);
+        console.log("Error config method:", err.config.method);
+        console.log("Error config data:", err.config.data);
       }
     }
     console.log("==================================");
-    const status = (error as any)?.response?.status || 500;
-    const data = (error as any)?.response?.data || { message: "Proxy request failed" };
+    const errResp = error as { response?: { status?: number; data?: unknown } };
+    const status = errResp.response?.status ?? 500;
+    const data = errResp.response?.data ?? { message: "Proxy request failed" };
     return new NextResponse(JSON.stringify(data), {
       status,
       headers: { 'Content-Type': 'application/json' },

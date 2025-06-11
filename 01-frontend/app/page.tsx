@@ -7,7 +7,7 @@ import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useSession } from "next-auth/react";
 
 export default function HomePage() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const {
     inputValue,
     setInputValue,
