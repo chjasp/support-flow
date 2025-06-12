@@ -363,7 +363,7 @@ resource "google_cloud_run_v2_service" "frontend" {
       }
       env {
         name  = "NEXTAUTH_URL"
-        value = "https://bloomlake.de"
+        value = "https://frontend-1050701491601.europe-west1.run.app"
       }
       env {
         name = "GOOGLE_CLIENT_ID"
@@ -496,8 +496,8 @@ resource "google_cloud_run_v2_service" "backend" {
     service_account = google_service_account.ingester.email
 
     scaling {
-      min_instance_count = 1
-      max_instance_count = 4
+      min_instance_count = 0
+      max_instance_count = 5
     }
 
     vpc_access {
