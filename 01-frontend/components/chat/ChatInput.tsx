@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 
 interface ChatInputProps {
   inputValue: string;
@@ -25,6 +25,17 @@ export function ChatInput({
   activeChatId,
   activeTypingMessageId,
 }: ChatInputProps) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Adjust textarea height whenever the value changes (also collapses when cleared)
+  useEffect(() => {
+    if (textareaRef.current) {
+      const el = textareaRef.current;
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, [inputValue]);
+
   return (
     <div className="sticky bottom-0">
       <div className="max-w-[768px] mx-auto pt-0 pb-4 px-4 bg-transparent">
@@ -51,6 +62,7 @@ export function ChatInput({
               }}
               disabled={interactionDisabled || !activeChatId}
               rows={1}
+              ref={textareaRef}
             />
           </div>
 

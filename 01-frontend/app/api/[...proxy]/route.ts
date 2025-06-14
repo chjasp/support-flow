@@ -1,22 +1,8 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { GoogleAuth } from "google-auth-library";
-
-const auth = new GoogleAuth();
 
 async function proxyRequest(req: NextRequest) {
-  // Read the API base URL from environment variables
-  const apiBaseUrl: string | undefined = process.env.API_BASE_URL;
-
-  // Ensure the API base URL is configured
-  if (!apiBaseUrl) {
-    console.error("API_BASE_URL environment variable is not set.");
-    return new NextResponse("Internal Server Error: API configuration missing.", {
-      status: 500,
-    });
-  }
-
-  // Strip the /api prefix and rebuild the backend URL
+  const apiBaseUrl = process.env.API_BASE_URL!;
   const path = req.nextUrl.pathname.replace(/^\/api\/?/, "");
   const backendUrl = `${apiBaseUrl}/${path}${req.nextUrl.search}`;
 
@@ -26,50 +12,21 @@ async function proxyRequest(req: NextRequest) {
   console.log("Backend URL:", backendUrl);
   console.log("Method:", req.method);
   
-  // Obtain an ID-token-enabled client for this backend URL
-  const idTokenClient = await auth.getIdTokenClient(backendUrl);
-
-  // Forward incoming headers to the backend, preserving content-type and others
-  // the API depends on. We do **not** forward the Authorization header directly
-  // because it will be overwritten by the ID token client. Instead, pass the
-  // user's ID token in a custom header so the backend can verify it separately.
-  const headers: Record<string, string> = {};
-  req.headers.forEach((value, key) => {
-    const lower = key.toLowerCase();
-    // The Host header should not be forwarded as it would be incorrect for the backend
-    if (lower === "host") return;
-    if (lower === "authorization") return; // handled separately
-    headers[key] = value;
-  });
+  // Just forward incoming headers (keep Authorization!)
+  const headers = new Headers(req.headers);
+  headers.delete("host");               // Cloud Run doesn't like foreign hosts
 
   // Forward the user's ID token using a custom header
   const userAuth = req.headers.get("authorization");
   if (userAuth) {
-    headers["x-user-authorization"] = userAuth;
+    headers.append("x-user-authorization", userAuth);
   }
 
-  // Determine if the request has a body
+  // Prepare body
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   const body = hasBody ? await req.clone().arrayBuffer() : undefined;
   
-  // Convert body to appropriate format for the Google Auth library
-  let requestData: unknown = undefined;
-  if (body) {
-    const contentType = req.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      // For JSON content, convert ArrayBuffer to string and then parse
-      const bodyText = new TextDecoder().decode(body);
-      try {
-        requestData = JSON.parse(bodyText);
-      } catch {
-        // If JSON parsing fails, send as string
-        requestData = bodyText;
-      }
-    } else {
-      // For non-JSON content, send as ArrayBuffer
-      requestData = body;
-    }
-  }
+  // No additional body transformation required — we'll forward it as-is.
 
   // ===== LOGGING POINT 2: Request Body =====
   if (body) {
@@ -92,11 +49,10 @@ async function proxyRequest(req: NextRequest) {
 
   try {
     // Make the request to the backend
-    const backendResp = await idTokenClient.request({
-      url: backendUrl,
-      method: req.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS",
+    const backendResp = await fetch(backendUrl, {
+      method: req.method,
       headers,
-      data: requestData,
+      body: body ? body : undefined,
     });
 
     // Forward the backend response to the client
@@ -113,17 +69,9 @@ async function proxyRequest(req: NextRequest) {
       });
     }
 
-    return new NextResponse(JSON.stringify(backendResp.data), {
+    return new NextResponse(backendResp.body, {
       status: backendResp.status,
-      headers: {
-        'Content-Type': 'application/json',
-        ...Object.fromEntries(
-          Object.entries(backendResp.headers).map(([key, value]) => [
-            key,
-            Array.isArray(value) ? value.join(', ') : String(value)
-          ])
-        )
-      },
+      headers: backendResp.headers,       // will include content-type, etc.
     });
   } catch (error: unknown) {
     // ===== LOGGING POINT 3: Error Details =====
