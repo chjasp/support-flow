@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 
 interface ChatInputProps {
   inputValue: string;
@@ -25,14 +25,25 @@ export function ChatInput({
   activeChatId,
   activeTypingMessageId,
 }: ChatInputProps) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Adjust textarea height whenever the value changes (also collapses when cleared)
+  useEffect(() => {
+    if (textareaRef.current) {
+      const el = textareaRef.current;
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, [inputValue]);
+
   return (
     <div className="sticky bottom-0">
       <div className="max-w-[768px] mx-auto pt-0 pb-4 px-4 bg-transparent">
-        <div className="bg-[#2F2F2F] rounded-3xl px-4 py-4 relative">
+        <div className="bg-[#353535] rounded-3xl px-4 py-4 relative">
           {/* Center - Textarea */}
           <div className="pb-10">
             <textarea
-              placeholder="Message ChatGPT..."
+              placeholder="Write a message …"
               className="w-full min-h-[32px] max-h-[200px] bg-transparent border-0 text-sm text-chatgpt resize-none focus:outline-none leading-6 chatgpt-textarea placeholder:text-chatgpt-secondary"
               value={inputValue}
               onChange={(e) => {
@@ -51,6 +62,7 @@ export function ChatInput({
               }}
               disabled={interactionDisabled || !activeChatId}
               rows={1}
+              ref={textareaRef}
             />
           </div>
 
@@ -68,16 +80,6 @@ export function ChatInput({
 
             {/* Right side - Action buttons */}
             <div className="flex items-center gap-2">
-              {/* Microphone Button */}
-              <button
-                className="w-8 h-8 flex items-center justify-center rounded-full text-chatgpt-secondary hover:text-chatgpt hover:bg-chatgpt-hover transition-colors"
-                title="Voice input"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-              </button>
-
               {/* Send/Stop Button */}
               <button
                 className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${

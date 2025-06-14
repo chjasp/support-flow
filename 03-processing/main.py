@@ -88,7 +88,7 @@ GEN_CONFIG = genai_types.GenerateContentConfig(
     # response_modalities=["TEXT"], # Optional: Specify modality if needed, often inferred
     temperature=0,
     top_p=0.1,
-    max_output_tokens=65535, # Adjusted based on common limits, check model specifics if needed <= model limit
+    max_output_tokens=10000, # Reduced to avoid excessively long outputs
     automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
         disable=True                     # ←‑‑‑ really disables AFC
     ),

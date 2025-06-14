@@ -16,6 +16,8 @@ from google.cloud import firestore
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 load_dotenv()
 
@@ -83,15 +85,23 @@ class DocumentItem(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────────
 # Authentication (dummy for demo only)
 # ──────────────────────────────────────────────────────────────────────────────
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-):
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+request_adapter = google_requests.Request()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not credentials or not credentials.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    try:
+        claims = id_token.verify_oauth2_token(
+            credentials.credentials, request_adapter, GOOGLE_CLIENT_ID
         )
-    # TODO: replace with real JWT verification
-    return {"user_id": "demo_user", "email": "demo@example.com"}
+        return {
+            "user_id": claims["email"],          # or claims["sub"]
+            "email": claims["email"],
+        }
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -179,13 +189,14 @@ class ChatService:
                 contents=query,
                 config=types.GenerateContentConfig(
                     automatic_function_calling={"disable": True},
+                    max_output_tokens=10000,
                 ),
             )
             return response.text
         except Exception as e:
             logger.error(f"LLM error: {e}")
             return (
-                "I’m having trouble generating a response right now—"
+                "I'm having trouble generating a response right now—"
                 "please try again in a moment."
             )
 

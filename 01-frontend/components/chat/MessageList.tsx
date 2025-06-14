@@ -154,13 +154,12 @@ export function MessageList({
           </div>
         ))}
 
-        {/* Show "Thinking..." directly under the latest user message */}
+        {/* Show pulsating dot directly under the latest user message */}
         {isLoading && (
           <div className="flex justify-start">
             <div className="px-4 py-3">
-              <div className="flex items-center space-x-2 text-chatgpt-secondary text-sm">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Thinking...</span>
+              <div className="flex items-center">
+                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
               </div>
             </div>
           </div>
