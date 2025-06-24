@@ -7,10 +7,9 @@ import { Message, ChatMetadata } from '@/types';
 import {
   CHATS_ENDPOINT,
   getMessagesEndpoint,
-  postMessageEndpoint,
   deleteChatEndpoint,
-  MAX_TITLE_LENGTH,
   TYPING_INTERVAL_MS,
+  streamMessageEndpoint,
 } from '@/lib/constants';
 
 export const useChat = () => {
@@ -27,6 +26,9 @@ export const useChat = () => {
   const [isFetchingMessages, setIsFetchingMessages] = useState(false);
   const [isCreatingChat, setIsCreatingChat] = useState(false);
   const [isDeletingChat, setIsDeletingChat] = useState(false);
+
+  // Latest reasoning line from backend
+  const [currentThought, setCurrentThought] = useState<string>("");
 
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeTypingMessageId = useRef<string | null>(null);
@@ -56,6 +58,20 @@ export const useChat = () => {
       typingTimeoutRef.current = null;
     }
   }, []);
+
+  const refreshChatList = useCallback(async () => {
+    if (!session) return;
+    
+    try {
+      const res = await authFetch(session, CHATS_ENDPOINT);
+      if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
+      
+      const chats: ChatMetadata[] = await res.json();
+      setChatList(chats);
+    } catch (err) {
+      console.error("Error refreshing chat list:", err);
+    }
+  }, [session]);
 
   const handleNewChat = useCallback(async () => {
     clearTypingEffect();
@@ -265,72 +281,92 @@ export const useChat = () => {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      const res = await authFetch(session, postMessageEndpoint(activeChatId), {
+      const res = await authFetch(session, streamMessageEndpoint(activeChatId), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify({ query: trimmed }),
         signal: abortController.signal,
       });
 
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const err = await res.text();
-        throw new Error(`Backend query failed: ${err || res.statusText}`);
+        throw new Error(`Backend stream failed: ${err || res.statusText}`);
       }
 
-      const {
-        user_message,
-        bot_message,
-      }: { user_message: Message; bot_message: Message } = await res.json();
+      const decoder = new TextDecoder("utf-8");
+      const reader = res.body.getReader();
+      let buffer = "";
 
-      const placeholder: Message = { ...bot_message, text: "" };
+      let streamEnded = false;
 
-      setIsLoading(false);
+      // Prepare placeholder bot message
+      const placeholderId = `placeholder-${Date.now()}`;
+      const placeholder: Message = {
+        id: placeholderId,
+        text: "",
+        sender: "bot",
+        timestamp: new Date().toISOString(),
+      };
+
+      setIsLoading(false); // we're streaming now, so stop spinner
       setCurrentMessages((prev) => [
         ...prev.filter((m) => m.id !== optimistic.id),
-        user_message,
+        optimistic,
         placeholder,
       ]);
 
-      setTimeout(() => startTypingEffect(bot_message.id, bot_message.text), 50);
-
-      setChatList((prev) => {
-        const idx = prev.findIndex((c) => c.id === activeChatId);
-        if (idx === -1) return prev;
-
-        const updated = { ...prev[idx] };
-        updated.lastActivity = bot_message.timestamp;
-        if (updated.title === "New Chat") {
-          const newTitle =
-            user_message.text.slice(0, MAX_TITLE_LENGTH) +
-            (user_message.text.length > MAX_TITLE_LENGTH ? "..." : "");
-          updated.title = newTitle;
+      const processEvent = (raw: string) => {
+        const lines = raw.split("\n");
+        let eventType = "message";
+        let dataLine = "";
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            eventType = line.replace("event:", "").trim();
+          } else if (line.startsWith("data:")) {
+            dataLine = line.slice(5); // keep leading whitespace after 'data:'
+          }
         }
-        return [updated, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        console.log("Message generation stopped by user");
-        setCurrentMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-      } else {
-        console.error("Failed to send message:", err);
 
-        const errorMsg: Message = {
-          id: `error-${Date.now()}`,
-          text: `Sorry, failed to process message. ${
-            err instanceof Error ? err.message : ""
-          }`,
-          sender: "bot",
-          timestamp: new Date().toISOString(),
-        };
+        if (!dataLine) return;
 
-        setCurrentMessages((prev) => [
-          ...prev.filter((m) => m.id !== optimistic.id),
-          errorMsg,
-        ]);
+        if (eventType === "thought") {
+          setCurrentThought(dataLine.trim());
+        } else if (eventType === "end") {
+          streamEnded = true;
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundaryIdx;
+        while ((boundaryIdx = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, boundaryIdx);
+          buffer = buffer.slice(boundaryIdx + 2);
+          processEvent(rawEvent);
+        }
       }
-      setIsLoading(false);
-    } finally {
-      abortControllerRef.current = null;
+
+      // process leftovers
+      if (buffer.length) processEvent(buffer);
+
+      // Stream finished
+      setCurrentThought("");
+      setIsGenerating(false);
+
+      // Refresh messages from backend to get persisted bot answer
+      if (streamEnded && activeChatId) {
+        await fetchMessages(activeChatId);
+        // Refresh chat list to get updated title
+        await refreshChatList();
+      }
+    } catch (err) {
+      console.error("Error sending message:", err);
     }
   };
 
@@ -353,6 +389,8 @@ export const useChat = () => {
     handleDeleteChat,
     handleSendMessage,
     handleStopGeneration,
-    activeTypingMessageId: activeTypingMessageId.current
+    activeTypingMessageId: activeTypingMessageId.current,
+    currentThought,
+    refreshChatList,
   };
-}; 
+};
