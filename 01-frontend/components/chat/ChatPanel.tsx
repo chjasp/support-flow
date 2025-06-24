@@ -20,6 +20,7 @@ interface ChatPanelProps {
   interactionDisabled: boolean;
   activeChatId: string | null;
   activeTypingMessageId: string | null;
+  currentThought?: string | null;
 }
 
 function ChatHeader() {
@@ -58,6 +59,7 @@ export function ChatPanel({
   interactionDisabled,
   activeChatId,
   activeTypingMessageId,
+  currentThought,
 }: ChatPanelProps) {
   const { data: session, status } = useSession();
   const lastMessageRef = useRef<HTMLDivElement>(null);
@@ -95,6 +97,7 @@ export function ChatPanel({
           messages={currentMessages}
           isFetchingMessages={isFetchingMessages}
           isLoading={isLoading}
+          currentThought={currentThought}
           lastMessageRef={lastMessageRef}
           bottomRef={bottomRef}
         />

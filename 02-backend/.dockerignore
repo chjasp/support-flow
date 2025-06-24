@@ -1,0 +1,14 @@
+# Exclude local/irrelevant files from Docker build context
+
+# VCS & editor metadata
+.git
+.gitignore
+.DS_Store
+
+# Python cache & virtualenvs
+__pycache__/
+*.py[cod]
+venv/
+
+# Local scripts
+*.sh

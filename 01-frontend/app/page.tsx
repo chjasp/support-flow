@@ -5,6 +5,7 @@ import { useChat } from "@/hooks/useChat";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { useSession } from "next-auth/react";
+import { Loader2 } from "lucide-react";
 
 export default function HomePage() {
   const { status } = useSession();
@@ -27,12 +28,13 @@ export default function HomePage() {
     handleSendMessage,
     handleStopGeneration,
     activeTypingMessageId,
+    currentThought,
   } = useChat();
 
   if (status === "loading") {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-chatgpt-main">
-        <h1 className="text-xl text-chatgpt">Loading session ...</h1>
+        <Loader2 className="h-8 w-8 animate-spin text-chatgpt" />
       </div>
     );
   }
@@ -62,6 +64,7 @@ export default function HomePage() {
         interactionDisabled={interactionDisabled}
         activeChatId={activeChatId}
         activeTypingMessageId={activeTypingMessageId}
+        currentThought={currentThought}
       />
     </div>
   );
