@@ -252,3 +252,17 @@ body {
 .scatter-chart-container .recharts-symbols {
   cursor: pointer;
 }
+
+/* --- Chat model select overrides --- */
+select {
+  cursor: pointer;
+  background-color: transparent;
+}
+select option {
+  cursor: pointer;
+}
+select option:hover {
+  /* Match sidebar dark grey */
+  background-color: var(--chatgpt-sidebar-bg) !important;
+  color: var(--chatgpt-text);
+}

@@ -30,6 +30,9 @@ export const useChat = () => {
   // Latest reasoning line from backend
   const [currentThought, setCurrentThought] = useState<string>("");
 
+  // NEW - currently selected model for generation
+  const [selectedModel, setSelectedModel] = useState<string>("Gemini 2.5 Pro");
+
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeTypingMessageId = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -392,5 +395,8 @@ export const useChat = () => {
     activeTypingMessageId: activeTypingMessageId.current,
     currentThought,
     refreshChatList,
+    // NEW - expose model selector
+    selectedModel,
+    setSelectedModel,
   };
 };
