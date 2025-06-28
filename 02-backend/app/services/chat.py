@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, List
+from typing import List
 
 from google.cloud import firestore
 from google import genai
@@ -89,47 +88,16 @@ class ChatService:
         return message
 
     # ─────────────────────────── Gemini interaction ───────────────────────────
-    async def _answer_stream(self, query: str) -> AsyncGenerator[dict, None]:
-        """Unified low-level stream that yields both thoughts & answer tokens."""
-
-        stream = await self.client.aio.models.generate_content_stream(
+    async def generate_response(self, query: str) -> str:
+        """Generate a full answer with a single non-streaming Gemini request."""
+        resp = await self.client.aio.models.generate_content(
             model=settings.model_name,
             contents=query,
-            config=gt.GenerateContentConfig(
-                thinking_config=gt.ThinkingConfig(include_thoughts=True),
-                max_output_tokens=4096,
-            ),
+            config=gt.GenerateContentConfig(max_output_tokens=4096),
         )
 
-        async for chunk in stream:
-            if not chunk.candidates:
-                continue
-            for part in chunk.candidates[0].content.parts:
-                txt = getattr(part, "text", "")
-                if not txt:
-                    continue
-                yield {
-                    "type": "thought" if getattr(part, "thought", False) else "answer",
-                    "text": txt,
-                }
-
-    async def generate_response(self, query: str) -> str:
-        """Return the full answer as a single string."""
-        parts: list[str] = []
-        async for piece in self._answer_stream(query):
-            if piece["type"] == "answer":
-                parts.append(piece["text"])
-        return "".join(parts)
-
-    async def stream_response(self, query: str):
-        """Yield thought/answer pieces suitable for SSE streaming."""
-        async for piece in self._answer_stream(query):
-            if piece["type"] == "thought":
-                # Emit only the first line of the internal reasoning to reduce noise
-                line = re.sub(r"[*_~`]", "", piece["text"].splitlines()[0]).strip()
-                yield {"type": "thought", "text": line}
-            else:
-                yield piece
+        # The google-genai client concatenates all parts for us in .text.
+        return resp.text or ""
 
     # ───────────────────────────── Deletion helpers ────────────────────────────
     def delete_chat(self, chat_id: str, user_id: str):

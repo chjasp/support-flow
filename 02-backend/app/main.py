@@ -14,7 +14,6 @@ from typing import List
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from google.cloud import firestore
 from google import genai
 
@@ -110,44 +109,6 @@ async def get_documents(user=Depends(get_current_user)):
 async def delete_document(doc_id: str, user=Depends(get_current_user)):
     _document_service.delete_document(doc_id, user["user_id"])
     return {"message": "Document deleted successfully"}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Streaming route
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/chats/{chat_id}/messages/stream")
-async def stream_message(chat_id: str, query: QueryRequest, user=Depends(get_current_user)):
-    """Stream thought lines and answer tokens as Server-Sent Events."""
-    logger.info("STREAM /chats/%s/messages/stream", chat_id)
-    logger.info("QUERY: %s", query.query)
-
-    # Persist user question upfront
-    user_msg = ChatMessage(text=query.query, sender="user")
-    _chat_service.add_message(chat_id, user_msg)
-
-    async def event_generator():
-        logger.info("Starting event generator for chat %s", chat_id)
-        answer_parts: list[str] = []
-
-        async for piece in _chat_service.stream_response(query.query):
-            if piece["type"] == "thought":
-                yield f"event:thought\ndata:{piece['text']}\n\n"
-            else:
-                answer_parts.append(piece["text"])
-
-        # After streaming finished, persist full answer (not streamed)
-        full_answer = "".join(answer_parts)
-        bot_msg = ChatMessage(text=full_answer, sender="bot")
-        _chat_service.add_message(chat_id, bot_msg)
-
-        logger.info("Finished streaming for chat %s, saving full answer.", chat_id)
-        logger.debug("BOT-LEN %s", len(full_answer))
-        logger.debug("BOT-TEXT %s", full_answer[-120:])
-
-        # Indicate completion only
-        yield "event:end\ndata:done\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

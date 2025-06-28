@@ -9,7 +9,7 @@ import {
   getMessagesEndpoint,
   deleteChatEndpoint,
   TYPING_INTERVAL_MS,
-  streamMessageEndpoint,
+  postMessageEndpoint,
 } from '@/lib/constants';
 
 export const useChat = () => {
@@ -284,92 +284,43 @@ export const useChat = () => {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      const res = await authFetch(session, streamMessageEndpoint(activeChatId), {
+      const res = await authFetch(session, postMessageEndpoint(activeChatId), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "text/event-stream",
         },
         body: JSON.stringify({ query: trimmed }),
         signal: abortController.signal,
       });
 
-      if (!res.ok || !res.body) {
-        const err = await res.text();
-        throw new Error(`Backend stream failed: ${err || res.statusText}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Backend request failed: ${errText || res.statusText}`);
       }
 
-      const decoder = new TextDecoder("utf-8");
-      const reader = res.body.getReader();
-      let buffer = "";
+      // Expecting { user_message: Message, bot_message: Message }
+      const { user_message, bot_message } = await res.json();
 
-      let streamEnded = false;
+      // Placeholder for typing effect
+      const botPlaceholder: Message = { ...bot_message, text: "" };
 
-      // Prepare placeholder bot message
-      const placeholderId = `placeholder-${Date.now()}`;
-      const placeholder: Message = {
-        id: placeholderId,
-        text: "",
-        sender: "bot",
-        timestamp: new Date().toISOString(),
-      };
-
-      setIsLoading(false); // we're streaming now, so stop spinner
+      setIsLoading(false);
+      // Replace optimistic with server-confirmed messages
       setCurrentMessages((prev) => [
         ...prev.filter((m) => m.id !== optimistic.id),
-        optimistic,
-        placeholder,
+        user_message,
+        botPlaceholder,
       ]);
 
-      const processEvent = (raw: string) => {
-        const lines = raw.split("\n");
-        let eventType = "message";
-        let dataLine = "";
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            eventType = line.replace("event:", "").trim();
-          } else if (line.startsWith("data:")) {
-            dataLine = line.slice(5); // keep leading whitespace after 'data:'
-          }
-        }
+      // Animate the bot reply
+      startTypingEffect(botPlaceholder.id, bot_message.text);
 
-        if (!dataLine) return;
-
-        if (eventType === "thought") {
-          setCurrentThought(dataLine.trim());
-        } else if (eventType === "end") {
-          streamEnded = true;
-        }
-      };
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let boundaryIdx;
-        while ((boundaryIdx = buffer.indexOf("\n\n")) !== -1) {
-          const rawEvent = buffer.slice(0, boundaryIdx);
-          buffer = buffer.slice(boundaryIdx + 2);
-          processEvent(rawEvent);
-        }
-      }
-
-      // process leftovers
-      if (buffer.length) processEvent(buffer);
-
-      // Stream finished
-      setCurrentThought("");
-      setIsGenerating(false);
-
-      // Refresh messages from backend to get persisted bot answer
-      if (streamEnded && activeChatId) {
-        await fetchMessages(activeChatId);
-        // Refresh chat list to get updated title
-        await refreshChatList();
-      }
+      // Refresh chat metadata (e.g., title) after response
+      await refreshChatList();
     } catch (err) {
       console.error("Error sending message:", err);
+    } finally {
+      setIsLoading(false);
     }
   };
 
