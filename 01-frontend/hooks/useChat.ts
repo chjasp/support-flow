@@ -334,7 +334,11 @@ export const useChat = () => {
       // Refresh chat metadata (e.g., title) after response
       await refreshChatList();
     } catch (err) {
-      console.error("Error sending message:", err);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // Expected when the user clicks the stop button – no need to log.
+      } else {
+        console.error("Error sending message:", err);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -401,7 +405,11 @@ export const useChat = () => {
 
       await refreshChatList();
     } catch (err) {
-      console.error("Error re-running message:", err);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // Expected when the user clicks the stop button – suppress log.
+      } else {
+        console.error("Error re-running message:", err);
+      }
     } finally {
       setIsLoading(false);
     }
