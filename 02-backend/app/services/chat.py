@@ -88,15 +88,23 @@ class ChatService:
         return message
 
     # ─────────────────────────── Gemini interaction ───────────────────────────
-    async def generate_response(self, query: str) -> str:
-        """Generate a full answer with a single non-streaming Gemini request."""
+    async def generate_response(self, query: str, model_id: str) -> str:
+        """Generate a full answer with a single non-streaming Gemini request.
+
+        Parameters
+        ----------
+        query: str
+            User's prompt.
+        model_id: str
+            The Vertex AI model resource path, e.g. ``models/gemini-1.5-pro``.
+        """
+
         resp = await self.client.aio.models.generate_content(
-            model=settings.model_name,
+            model=model_id,
             contents=query,
             config=gt.GenerateContentConfig(max_output_tokens=4096),
         )
 
-        # The google-genai client concatenates all parts for us in .text.
         return resp.text or ""
 
     # ───────────────────────────── Deletion helpers ────────────────────────────

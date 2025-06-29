@@ -10,7 +10,7 @@ All heavy lifting now lives in sibling modules:
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,9 @@ _db = firestore.Client(project=settings.project_id)
 # Services
 _chat_service = ChatService(db_client=_db, genai_client=_genai_client)
 _document_service = DocumentService(db_client=_db)
+
+# Collections
+_MODELS_COLLECTION = "models"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FastAPI application
@@ -73,15 +76,36 @@ async def get_chat_messages(chat_id: str, user=Depends(get_current_user)):
 
 @app.post("/chats/{chat_id}/messages")
 async def send_message(chat_id: str, query: QueryRequest, user=Depends(get_current_user)):
+    # Store user message
     user_msg = ChatMessage(text=query.query, sender="user")
     saved_user_msg = _chat_service.add_message(chat_id, user_msg)
 
-    ai_text = await _chat_service.generate_response(query.query)
+    # Resolve model_id by model_name from Firestore
+    model_id: Optional[str] = None
+
+    try:
+        doc = (
+            _db.collection(_MODELS_COLLECTION)
+            .where("name", "==", query.model_name)
+            .limit(1)
+            .get()
+        )
+        if doc:
+            doc_data = doc[0].to_dict()
+            if doc_data.get("active") is not False:
+                model_id = doc_data.get("model_id") or doc_data.get("id")
+                
+    except Exception as exc:
+        logger.error("Error fetching model_id for '%s': %s", query.model_name, exc)
+
+    if not model_id:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Invalid or inactive model selected")
+
+    ai_text = await _chat_service.generate_response(query.query, model_id)
     bot_msg = ChatMessage(text=ai_text, sender="bot")
     saved_bot_msg = _chat_service.add_message(chat_id, bot_msg)
-
-    logger.debug("BOT-LEN %s", len(ai_text))
-    logger.debug("BOT-TEXT %s", ai_text[-120:])
 
     return {"user_message": saved_user_msg, "bot_message": saved_bot_msg}
 
@@ -117,6 +141,59 @@ async def delete_document(doc_id: str, user=Depends(get_current_user)):
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "message": "Service is running"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Model list route
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/models", response_model=List[str])
+async def get_available_models(user=Depends(get_current_user)):
+    """Return the list of **display names** for available Gemini models.
+
+    Data source: Firestore collection ``models`` where each document contains
+    at minimum a ``name`` field (display label) and optionally a ``model_id``
+    and an ``active`` boolean.  Only documents with ``active`` == True (or
+    missing) are returned, ordered alphabetically by ``name``.
+    """
+
+    try:
+        collection_ref = _db.collection(_MODELS_COLLECTION)
+
+        # Fetch all docs; we'll filter by 'active' flag in Python so that
+        # documents without the field are treated as active.
+        docs_iter = collection_ref.stream()
+
+        models_info = []
+        for doc in docs_iter:
+            data = doc.to_dict()
+            # Skip if explicit active flag set to False
+            if data.get("active") is False:
+                continue
+
+            name = data.get("name")
+            if not name:
+                continue  # Display name required
+
+            order_val_raw = data.get("order")
+            # Ensure numeric order; default large value
+            try:
+                order_val = int(order_val_raw)
+            except (TypeError, ValueError):
+                order_val = 1_000_000
+
+            models_info.append({"name": name, "order": order_val, "model_id": data.get("model_id") or data.get("id")})
+
+        # Sort first by order then alphabetically by name for stability
+        models_info.sort(key=lambda x: (x["order"], x["name"].lower()))
+
+        names: List[str] = [m["name"] for m in models_info]
+
+        return names
+
+    except Exception as exc:
+        # Log and fall back to env var list for resiliency
+        logger.error("Failed to fetch models from Firestore: %s", exc)
+        return []
 
 
 # ──────────────────────────────────────────────────────────────────────────────

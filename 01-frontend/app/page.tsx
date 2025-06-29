@@ -29,8 +29,11 @@ export default function HomePage() {
     handleStopGeneration,
     activeTypingMessageId,
     currentThought,
+    handleRerunMessage,
     selectedModel,
     setSelectedModel,
+    handleDeleteUserPair,
+    availableModels,
   } = useChat();
 
   if (status === "loading") {
@@ -67,8 +70,11 @@ export default function HomePage() {
         activeChatId={activeChatId}
         activeTypingMessageId={activeTypingMessageId}
         currentThought={currentThought}
+        handleRerunMessage={handleRerunMessage}
         selectedModel={selectedModel}
         setSelectedModel={setSelectedModel}
+        handleDeleteUserPair={handleDeleteUserPair}
+        availableModels={availableModels}
       />
     </div>
   );

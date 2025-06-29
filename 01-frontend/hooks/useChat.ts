@@ -10,6 +10,7 @@ import {
   deleteChatEndpoint,
   TYPING_INTERVAL_MS,
   postMessageEndpoint,
+  MODELS_ENDPOINT,
 } from '@/lib/constants';
 
 export const useChat = () => {
@@ -31,7 +32,10 @@ export const useChat = () => {
   const [currentThought, setCurrentThought] = useState<string>("");
 
   // NEW - currently selected model for generation
-  const [selectedModel, setSelectedModel] = useState<string>("Gemini 2.5 Pro");
+  const [selectedModel, setSelectedModel] = useState<string>("");
+
+  // NEW - list of available models fetched from backend
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
 
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeTypingMessageId = useRef<string | null>(null);
@@ -289,7 +293,7 @@ export const useChat = () => {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({ query: trimmed, model_name: selectedModel }),
         signal: abortController.signal,
       });
 
@@ -324,6 +328,110 @@ export const useChat = () => {
     }
   };
 
+  // NEW - rerun an existing user cell with provided text
+  const handleRerunMessage = async (userMsgId: string, text: string) => {
+    const trimmed = text.trim();
+    if (!activeChatId || !trimmed || interactionDisabled) return;
+
+    setIsLoading(true);
+
+    // Prepare UI: remove existing bot reply following this user cell (if any) and insert placeholder
+    setCurrentMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === userMsgId);
+      if (idx === -1) return prev;
+
+      const newArr = [...prev];
+      // remove existing bot message after
+      if (newArr[idx + 1]?.sender === "bot") {
+        newArr.splice(idx + 1, 1);
+      }
+
+      // insert placeholder bot message
+      const placeholderId = `temp-bot-${Date.now()}`;
+      newArr.splice(idx + 1, 0, {
+        id: placeholderId,
+        sender: "bot",
+        text: "",
+        timestamp: new Date().toISOString(),
+      });
+      return newArr;
+    });
+
+    try {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      const res = await authFetch(session, postMessageEndpoint(activeChatId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: trimmed, model_name: selectedModel }),
+        signal: abortController.signal,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Backend request failed: ${errText || res.statusText}`);
+      }
+
+      const { bot_message } = await res.json();
+
+      // Replace placeholder with bot_message and animate
+      setCurrentMessages((prev) =>
+        prev.map((m) =>
+          m.id.startsWith("temp-bot-") ? { ...bot_message, text: "" } : m
+        )
+      );
+
+      startTypingEffect(bot_message.id, bot_message.text);
+
+      await refreshChatList();
+    } catch (err) {
+      console.error("Error re-running message:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteMessagePair = (userMsgId: string) => {
+    setCurrentMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === userMsgId);
+      if (idx === -1) return prev;
+      const newArr = [...prev];
+      // remove user message
+      newArr.splice(idx, 1);
+      // if next message exists and is bot, remove it too
+      if (newArr[idx]?.sender === "bot") {
+        newArr.splice(idx, 1);
+      }
+      return newArr;
+    });
+  };
+
+  // Fetch available models once we have a session
+  const fetchModels = useCallback(async () => {
+    if (!session) return;
+
+    try {
+      const res = await authFetch(session, MODELS_ENDPOINT);
+      if (!res.ok) throw new Error(`Failed to fetch models: ${res.statusText}`);
+
+      const models: string[] = await res.json();
+      setAvailableModels(models);
+
+      // Update selected model if current selection is missing
+      if (models.length && (!selectedModel || !models.includes(selectedModel))) {
+        setSelectedModel(models[0]);
+      }
+    } catch (err) {
+      console.error('Error fetching models:', err);
+    }
+  }, [session, selectedModel]);
+
+  useEffect(() => {
+    fetchModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   return {
     session,
     inputValue,
@@ -346,8 +454,11 @@ export const useChat = () => {
     activeTypingMessageId: activeTypingMessageId.current,
     currentThought,
     refreshChatList,
+    handleRerunMessage,
+    handleDeleteUserPair: handleDeleteMessagePair,
     // NEW - expose model selector
     selectedModel,
     setSelectedModel,
+    availableModels,
   };
 };

@@ -5,4 +5,7 @@ export const TYPING_INTERVAL_MS = 8;
 export const CHATS_ENDPOINT = '/api/chats';
 export const getMessagesEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
 export const postMessageEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}/messages`;
-export const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`; 
+export const deleteChatEndpoint = (chatId: string) => `${CHATS_ENDPOINT}/${chatId}`;
+
+// Models
+export const MODELS_ENDPOINT = '/api/models'; 

@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useRef, useEffect } from 'react';
+import { Play, ChevronDown, Check } from 'lucide-react';
+import * as Select from '@radix-ui/react-select';
 
 interface ChatInputProps {
   inputValue: string;
@@ -12,6 +14,8 @@ interface ChatInputProps {
   interactionDisabled: boolean;
   activeChatId: string | null;
   activeTypingMessageId: string | null;
+  selectedModel: string;
+  setSelectedModel: React.Dispatch<React.SetStateAction<string>>;
 }
 
 export function ChatInput({
@@ -24,6 +28,8 @@ export function ChatInput({
   interactionDisabled,
   activeChatId,
   activeTypingMessageId,
+  selectedModel,
+  setSelectedModel,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -39,9 +45,54 @@ export function ChatInput({
   return (
     <div className="sticky bottom-0">
       <div className="max-w-[768px] mx-auto pt-0 pb-4 px-4 bg-transparent">
-        <div className="bg-[#353535] rounded-3xl px-4 py-4 relative">
+        <div className="bg-[#353535] rounded-md border border-chatgpt-border px-4 py-2 relative">
+          {/* Toolbar */}
+          <div className="flex items-center justify-between pb-1 mb-2 -mx-4 px-4 border-b border-chatgpt-border">
+            {/* Play / Run cell button */}
+            <button
+              className={`w-6 h-6 flex items-center justify-center transition-colors ${
+                inputValue.trim() && !interactionDisabled && activeChatId
+                  ? "text-white hover:text-chatgpt-secondary cursor-pointer"
+                  : "text-[#4D4D5F] cursor-not-allowed"
+              }`}
+              onClick={handleSendMessage}
+              disabled={interactionDisabled || !activeChatId || !inputValue.trim()}
+              title="Run cell"
+            >
+              <Play className="w-4 h-4" strokeWidth={2} fill="currentColor" />
+            </button>
+
+            {/* Model selector */}
+            <Select.Root value={selectedModel} onValueChange={setSelectedModel} disabled={interactionDisabled}>
+              <Select.Trigger className="flex items-center gap-1 text-chatgpt text-xs focus:outline-none cursor-pointer" aria-label="Model selector">
+                <Select.Value />
+                <Select.Icon asChild>
+                  <ChevronDown className="w-3 h-3" />
+                </Select.Icon>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Content className="bg-chatgpt-sidebar text-chatgpt border border-chatgpt-border rounded-md shadow-lg overflow-hidden">
+                  <Select.Viewport className="py-1">
+                    {['Gemini 2.5 Pro', 'Gemini 2.5 Flash', 'Gemini 2.5 Flash Lite'].map((model) => (
+                      <Select.Item
+                        key={model}
+                        value={model}
+                        className="cursor-pointer px-3 py-1 text-xs flex items-center gap-2 outline-none data-[highlighted]:bg-chatgpt-hover"
+                      >
+                        <Select.ItemText>{model}</Select.ItemText>
+                        <Select.ItemIndicator className="ml-auto">
+                          <Check className="w-3 h-3" />
+                        </Select.ItemIndicator>
+                      </Select.Item>
+                    ))}
+                  </Select.Viewport>
+                </Select.Content>
+              </Select.Portal>
+            </Select.Root>
+          </div>
+
           {/* Center - Textarea */}
-          <div className="pb-10">
+          <div>
             <textarea
               placeholder="Write a message …"
               className="w-full min-h-[32px] max-h-[200px] bg-transparent border-0 text-sm text-chatgpt resize-none focus:outline-none leading-6 chatgpt-textarea placeholder:text-chatgpt-secondary"
@@ -66,60 +117,7 @@ export function ChatInput({
             />
           </div>
 
-          {/* Bottom row - Buttons */}
-          <div className="absolute bottom-4 left-4 right-4 flex justify-between items-center">
-            {/* Left side - Attach button */}
-            <button
-              className="w-8 h-8 flex items-center justify-center rounded-full text-chatgpt-secondary hover:text-chatgpt hover:bg-chatgpt-hover transition-colors"
-              title="Attach files"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
-
-            {/* Right side - Action buttons */}
-            <div className="flex items-center gap-2">
-              {/* Send/Stop Button */}
-              <button
-                className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                  (isLoading || isGenerating)
-                    ? "bg-white text-black hover:bg-gray-200 cursor-pointer"
-                    : inputValue.trim() && !interactionDisabled && activeChatId
-                      ? "bg-white text-black hover:bg-gray-200 cursor-pointer"
-                      : "bg-[#676767] text-[#2F2F2F] cursor-not-allowed"
-                }`}
-                onClick={
-                  (isLoading || isGenerating)
-                    ? handleStopGeneration
-                    : handleSendMessage
-                }
-                disabled={
-                  (!isLoading && !isGenerating) &&
-                  (interactionDisabled ||
-                  !activeChatId ||
-                  !inputValue.trim())
-                }
-                title={
-                  (isLoading || isGenerating)
-                    ? "Stop generating"
-                    : "Send message"
-                }
-              >
-                {(isLoading || isGenerating) ? (
-                  /* Stop icon */
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                  </svg>
-                ) : (
-                  /* Send icon */
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 19V5m-5 5l5-5 5 5" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
+          {/* Bottom action buttons removed for notebook-style layout */}
         </div>
       </div>
     </div>

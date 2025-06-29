@@ -6,9 +6,6 @@ import { LogIn, LogOut } from 'lucide-react';
 import { Message } from '@/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { MessageList } from '@/components/chat/MessageList';
-import { ChatInput } from '@/components/chat/ChatInput';
-import * as Select from '@radix-ui/react-select';
-import { ChevronDown, Check } from 'lucide-react';
 
 interface ChatPanelProps {
   currentMessages: Message[];
@@ -25,41 +22,16 @@ interface ChatPanelProps {
   currentThought?: string | null;
   selectedModel: string;
   setSelectedModel: React.Dispatch<React.SetStateAction<string>>;
+  handleRerunMessage: (userMsgId: string, text: string) => void;
+  handleDeleteUserPair: (userMsgId: string) => void;
+  availableModels: string[];
 }
 
-function ChatHeader({ selectedModel, setSelectedModel }: { selectedModel: string; setSelectedModel: React.Dispatch<React.SetStateAction<string>> }) {
+function ChatHeader() {
   const { data: session } = useSession();
   return (
-    <div className="bg-chatgpt-hover h-12 flex items-center justify-between px-4 flex-shrink-0">
-      {/* Custom select using Radix for full styling control */}
-      <Select.Root value={selectedModel} onValueChange={setSelectedModel}>
-        <Select.Trigger className="flex items-center gap-1 text-chatgpt text-sm focus:outline-none cursor-pointer" aria-label="Model selector">
-          <Select.Value />
-          <Select.Icon asChild>
-            <ChevronDown className="w-4 h-4" />
-          </Select.Icon>
-        </Select.Trigger>
-        <Select.Portal>
-          <Select.Content className="bg-chatgpt-sidebar text-chatgpt border border-chatgpt-border rounded-md shadow-lg overflow-hidden">
-            <Select.Viewport className="py-1">
-              {['Gemini 2.5 Pro', 'Gemini 2.5 Flash', 'Gemini 2.5 Flash Lite'].map((model) => (
-                <Select.Item
-                  key={model}
-                  value={model}
-                  className="cursor-pointer px-4 py-1 text-sm flex items-center gap-2 outline-none data-[highlighted]:bg-chatgpt-hover"
-                >
-                  <Select.ItemText>{model}</Select.ItemText>
-                  <Select.ItemIndicator className="ml-auto">
-                    <Check className="w-4 h-4" />
-                  </Select.ItemIndicator>
-                </Select.Item>
-              ))}
-            </Select.Viewport>
-          </Select.Content>
-        </Select.Portal>
-      </Select.Root>
-
-      {/* Sign out button on the right */}
+    <div className="bg-chatgpt-hover h-12 flex items-center justify-end px-4 flex-shrink-0">
+      {/* Sign out button */}
       {session?.user && (
         <div className="relative group">
           <button
@@ -95,6 +67,9 @@ export function ChatPanel({
   currentThought,
   selectedModel,
   setSelectedModel,
+  handleRerunMessage,
+  handleDeleteUserPair,
+  availableModels,
 }: ChatPanelProps) {
   const { data: session, status } = useSession();
   const lastMessageRef = useRef<HTMLDivElement>(null);
@@ -115,7 +90,7 @@ export function ChatPanel({
   if (status !== 'loading' && !session?.user) {
     return (
       <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-hover">
-        <ChatHeader selectedModel={selectedModel} setSelectedModel={setSelectedModel} />
+        <ChatHeader />
         <div className="flex-1 flex items-center justify-center -mt-20">
           <button
             onClick={() => signIn('google', { callbackUrl: '/' })}
@@ -131,30 +106,31 @@ export function ChatPanel({
 
   return (
     <main className="flex-1 flex flex-col overflow-hidden bg-chatgpt-hover">
-      <ChatHeader selectedModel={selectedModel} setSelectedModel={setSelectedModel} />
+      <ChatHeader />
 
       <ScrollArea className="flex-1 min-h-0" id="message-scroll-area">
-        <MessageList
-          messages={currentMessages}
-          isFetchingMessages={isFetchingMessages}
-          isLoading={isLoading}
-          currentThought={currentThought}
-          lastMessageRef={lastMessageRef}
-          bottomRef={bottomRef}
-        />
-      </ScrollArea>
+        <div className="flex flex-col">
+          <MessageList
+            messages={currentMessages}
+            isFetchingMessages={isFetchingMessages}
+            isLoading={isLoading}
+            currentThought={currentThought}
+            lastMessageRef={lastMessageRef}
+            bottomRef={bottomRef}
+            handleRerunMessage={handleRerunMessage}
+            handleDeleteUserPair={handleDeleteUserPair}
+            inputValue={inputValue}
+            setInputValue={setInputValue}
+            handleSendMessage={handleSendMessage}
+            interactionDisabled={interactionDisabled}
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+            models={availableModels}
+          />
 
-      <ChatInput
-        inputValue={inputValue}
-        setInputValue={setInputValue}
-        handleSendMessage={handleSendMessage}
-        handleStopGeneration={handleStopGeneration}
-        isLoading={isLoading}
-        isGenerating={isGenerating}
-        interactionDisabled={interactionDisabled}
-        activeChatId={activeChatId}
-        activeTypingMessageId={activeTypingMessageId}
-      />
+          {/* Editable user cell handled within MessageList */}
+        </div>
+      </ScrollArea>
     </main>
   );
 } 
