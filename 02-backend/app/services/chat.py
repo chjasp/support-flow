@@ -13,6 +13,8 @@ from google.genai import types as gt
 
 from ..models import ChatMessage, ChatSession
 from ..settings import settings
+from ..tools.bigquery_node import BigQueryNode
+from ..tools.router import Router
 
 logger = logging.getLogger(__name__)
 
@@ -84,16 +86,36 @@ class ChatService:
 
     # ─────────────────────────── Gemini interaction ───────────────────────────
     async def generate_response(self, query: str, model_id: str) -> str:
-        """Generate a full answer with a single non-streaming Gemini request.
+        """Generate a response that *may* involve tool execution via Router.
 
-        Parameters
-        ----------
-        query: str
-            User's prompt.
-        model_id: str
-            The Vertex AI model resource path, e.g. ``models/gemini-1.5-pro``.
+        The call order is:
+        1. Ask Gemini with *function calling* enabled to see if it wants to
+           trigger one of the registered ToolNodes (currently BigQuery).
+        2. If Gemini returns ``finish_reason == TOOL_USE`` we execute the tool
+           and let Gemini do a *follow-up* summarisation so the final answer is
+           user-friendly.
+        3. Fallback – no tool call → we return Gemini's direct answer.
         """
 
+        # 1) Try router-based invocation first (sync call inside async func)
+        try:
+            router = Router(
+                llm_client=self.client,
+                tools=[BigQueryNode(project=settings.project_id)],
+                model_id=model_id,
+            )
+
+            # Router.process uses blocking client; run in thread to avoid
+            # blocking the event-loop.
+            import anyio
+
+            routed_text = await anyio.to_thread.run_sync(router.process, query)
+            if routed_text:
+                return routed_text
+        except Exception as exc:  # pragma: no cover – router failure
+            logger.error("Router failed → falling back to pure LLM: %s", exc, exc_info=False)
+
+        # 2) Pure LLM fallback (existing behaviour)
         resp = await self.client.aio.models.generate_content(
             model=model_id,
             contents=query,
