@@ -4,7 +4,7 @@ All heavy lifting now lives in sibling modules:
   • settings.py        - env/config
   • auth.py            - authentication dependency
   • models.py          - Pydantic schemas
-  • services/          - ChatService & DocumentService
+  • services/          - ChatService
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ from google import genai
 from pydantic import BaseModel
 
 from .auth import get_current_user
-from .models import ChatMessage, ChatSession, DocumentItem, QueryRequest
+from .models import ChatMessage, ChatSession, QueryRequest
 from .services.chat import ChatService
-from .services.docs import DocumentService
 from .settings import settings
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -38,7 +37,6 @@ _db = firestore.Client(project=settings.project_id)
 
 # Services
 _chat_service = ChatService(db_client=_db, genai_client=_genai_client)
-_document_service = DocumentService(db_client=_db)
 
 # Collections
 _MODELS_COLLECTION = "models"
@@ -132,24 +130,6 @@ async def rename_chat(chat_id: str, payload: RenameRequest, user=Depends(get_cur
 
     return _chat_service.rename_chat(chat_id, user["user_id"], new_title)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Document routes
-# ──────────────────────────────────────────────────────────────────────────────
-@app.post("/documents", response_model=DocumentItem)
-async def add_document(name: str, content: str, user=Depends(get_current_user)):
-    return _document_service.add_document(user["user_id"], name, content)
-
-
-@app.get("/documents", response_model=List[DocumentItem])
-async def get_documents(user=Depends(get_current_user)):
-    return _document_service.get_documents(user["user_id"])
-
-
-@app.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str, user=Depends(get_current_user)):
-    _document_service.delete_document(doc_id, user["user_id"])
-    return {"message": "Document deleted successfully"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

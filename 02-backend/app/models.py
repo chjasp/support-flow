@@ -23,10 +23,3 @@ class ChatSession(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     model_name: str
-
-
-class DocumentItem(BaseModel):
-    id: str
-    name: str
-    content: str
-    created_at: _dt.datetime 

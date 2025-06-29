@@ -1,9 +1,0 @@
-cloud-sql-python-connector[pg8000]
-pg8000
-sqlalchemy
-pandas
-numpy
-umap-learn
-plotly
-tqdm
-nbformat>=4.2.0
