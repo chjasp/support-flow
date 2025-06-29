@@ -5,9 +5,9 @@ import { useSession } from 'next-auth/react';
 import { authFetch } from '@/lib/authFetch';
 import { Message, ChatMetadata } from '@/types';
 import {
-  CHATS_ENDPOINT,
+  NOTEBOOKS_ENDPOINT,
   getMessagesEndpoint,
-  deleteChatEndpoint,
+  deleteNotebookEndpoint,
   TYPING_INTERVAL_MS,
   postMessageEndpoint,
   MODELS_ENDPOINT,
@@ -41,6 +41,9 @@ export const useChat = () => {
   const activeTypingMessageId = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // ID of the user message currently triggering a generation (used to toggle Play/Stop button)
+  const [runningUserMessageId, setRunningUserMessageId] = useState<string | null>(null);
+
   const interactionDisabled = useMemo(
     () =>
       isLoading ||
@@ -70,7 +73,7 @@ export const useChat = () => {
     if (!session) return;
     
     try {
-      const res = await authFetch(session, CHATS_ENDPOINT);
+      const res = await authFetch(session, NOTEBOOKS_ENDPOINT);
       if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
       
       const chats: ChatMetadata[] = await res.json();
@@ -86,7 +89,7 @@ export const useChat = () => {
     setIsCreatingChat(true);
 
     try {
-      const res = await authFetch(session, CHATS_ENDPOINT, { method: "POST" });
+      const res = await authFetch(session, NOTEBOOKS_ENDPOINT, { method: "POST" });
       if (!res.ok) throw new Error(`Failed to create chat: ${res.statusText}`);
 
       const {
@@ -159,7 +162,7 @@ export const useChat = () => {
       setIsFetchingChats(true);
 
       try {
-        const res = await authFetch(session, CHATS_ENDPOINT);
+        const res = await authFetch(session, NOTEBOOKS_ENDPOINT);
         if (!res.ok) throw new Error(`Failed to fetch chats: ${res.statusText}`);
 
         const chats: ChatMetadata[] = await res.json();
@@ -200,7 +203,7 @@ export const useChat = () => {
     setIsDeletingChat(true);
 
     try {
-      const res = await authFetch(session, deleteChatEndpoint(chatId), {
+      const res = await authFetch(session, deleteNotebookEndpoint(chatId), {
         method: "DELETE",
       });
       if (!res.ok) throw new Error(`Failed to delete chat: ${res.statusText}`);
@@ -247,6 +250,8 @@ export const useChat = () => {
           activeTypingMessageId.current = null;
           typingTimeoutRef.current = null;
           setIsGenerating(false);
+          // Clear running message id as generation finished
+          setRunningUserMessageId(null);
         }
       };
 
@@ -265,6 +270,7 @@ export const useChat = () => {
     activeTypingMessageId.current = null;
     setIsLoading(false);
     setIsGenerating(false);
+    setRunningUserMessageId(null);
   }, [clearTypingEffect]);
 
   const handleSendMessage = async () => {
@@ -279,6 +285,9 @@ export const useChat = () => {
       sender: "user",
       timestamp: new Date().toISOString(),
     };
+
+    // Indicate that this user message is now running
+    setRunningUserMessageId(optimistic.id);
 
     setCurrentMessages((prev) => [...prev, optimistic]);
 
@@ -316,6 +325,9 @@ export const useChat = () => {
         botPlaceholder,
       ]);
 
+      // Update running message id to the actual id returned by backend
+      setRunningUserMessageId(user_message.id);
+
       // Animate the bot reply
       startTypingEffect(botPlaceholder.id, bot_message.text);
 
@@ -334,6 +346,9 @@ export const useChat = () => {
     if (!activeChatId || !trimmed || interactionDisabled) return;
 
     setIsLoading(true);
+
+    // Mark this user message as running so the UI can show a Stop button
+    setRunningUserMessageId(userMsgId);
 
     // Prepare UI: remove existing bot reply following this user cell (if any) and insert placeholder
     setCurrentMessages((prev) => {
@@ -432,6 +447,42 @@ export const useChat = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
+  // ─────────────────────────── Rename notebook ────────────────────────────
+
+  const handleRenameChat = useCallback(
+    async (chatId: string, newTitle: string) => {
+      const trimmed = newTitle.trim();
+      if (!trimmed || !chatId) return;
+
+      try {
+        const res = await authFetch(session, `${NOTEBOOKS_ENDPOINT}/${chatId}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ title: trimmed }),
+        });
+
+        if (!res.ok) throw new Error(`Failed to rename notebook: ${res.statusText}`);
+
+        const updated: { id: string; title: string; updated_at: string } = await res.json();
+
+        setChatList((prev) =>
+          prev.map((c) => (c.id === chatId ? { ...c, title: updated.title } : c)),
+        );
+
+        // If this is the active chat, ensure state reflects title change
+        if (chatId === activeChatId) {
+          // No separate state for title, but triggering state update ensures rerender
+          setChatList((prev) => [...prev]);
+        }
+      } catch (err) {
+        console.error("Error renaming notebook:", err);
+      }
+    },
+    [session, activeChatId],
+  );
+
   return {
     session,
     inputValue,
@@ -460,5 +511,7 @@ export const useChat = () => {
     selectedModel,
     setSelectedModel,
     availableModels,
+    handleRenameChat,
+    runningUserMessageId,
   };
 };

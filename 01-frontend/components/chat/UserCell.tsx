@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import { Play, ChevronDown, Check, Trash2 } from "lucide-react";
+import { Play, Square, ChevronDown, Check, Trash2 } from "lucide-react";
 import * as Select from "@radix-ui/react-select";
 
 interface UserCellProps {
@@ -13,6 +13,10 @@ interface UserCellProps {
   setSelectedModel?: React.Dispatch<React.SetStateAction<string>>;
   onDelete?: () => void;
   models?: string[];
+  // Indicates that this cell is currently executing. When true, show a Stop button instead of Play.
+  isRunning?: boolean;
+  // Callback to stop the ongoing generation. Only relevant when isRunning === true.
+  onStop?: () => void;
 }
 
 export const UserCell: React.FC<UserCellProps> = ({
@@ -25,6 +29,8 @@ export const UserCell: React.FC<UserCellProps> = ({
   setSelectedModel,
   onDelete,
   models = [],
+  isRunning = false,
+  onStop,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -37,22 +43,34 @@ export const UserCell: React.FC<UserCellProps> = ({
     }
   }, [text, editable]);
 
-  const runDisabled = interactionDisabled || !text.trim();
+  // Disable the Play button when interaction is disabled or no text is present.
+  // When the cell is running, the Stop button should stay enabled.
+  const runDisabled = (!isRunning && (interactionDisabled || !text.trim()));
 
   return (
     <div className="w-full border border-chatgpt-border rounded-md bg-chatgpt-input">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-1 border-b border-chatgpt-border">
-        <button
-          className={`w-6 h-6 flex items-center justify-center transition-colors ${
-            runDisabled ? "text-[#4D4D5F] cursor-not-allowed" : "text-white hover:text-chatgpt-secondary cursor-pointer"
-          }`}
-          disabled={runDisabled}
-          onClick={() => !runDisabled && onRun(text)}
-          title="Run cell"
-        >
-          <Play className="w-4 h-4" strokeWidth={2} fill="currentColor" />
-        </button>
+        {isRunning ? (
+          <button
+            className="w-6 h-6 flex items-center justify-center text-white hover:text-chatgpt-secondary cursor-pointer transition-colors"
+            onClick={onStop}
+            title="Stop generation"
+          >
+            <Square className="w-4 h-4" strokeWidth={2} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            className={`w-6 h-6 flex items-center justify-center transition-colors ${
+              runDisabled ? "text-[#4D4D5F] cursor-not-allowed" : "text-white hover:text-chatgpt-secondary cursor-pointer"
+            }`}
+            disabled={runDisabled}
+            onClick={() => !runDisabled && onRun(text)}
+            title="Run cell"
+          >
+            <Play className="w-4 h-4" strokeWidth={2} fill="currentColor" />
+          </button>
+        )}
 
         {/* Right side controls */}
         {editable ? (

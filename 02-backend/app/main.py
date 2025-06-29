@@ -12,10 +12,11 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import firestore
 from google import genai
+from pydantic import BaseModel
 
 from .auth import get_current_user
 from .models import ChatMessage, ChatSession, DocumentItem, QueryRequest
@@ -56,25 +57,25 @@ app.add_middleware(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Chat routes
+# Notebook routes
 # ──────────────────────────────────────────────────────────────────────────────
-@app.post("/chats", response_model=ChatSession)
+@app.post("/notebooks", response_model=ChatSession)
 async def create_chat(user=Depends(get_current_user)):
     return _chat_service.create_chat(user["user_id"])
 
 
-@app.get("/chats", response_model=List[ChatSession])
+@app.get("/notebooks", response_model=List[ChatSession])
 async def get_chats(user=Depends(get_current_user)):
     return _chat_service.get_chats(user["user_id"])
 
 
-@app.get("/chats/{chat_id}/messages", response_model=List[ChatMessage])
+@app.get("/notebooks/{chat_id}/messages", response_model=List[ChatMessage])
 async def get_chat_messages(chat_id: str, user=Depends(get_current_user)):
     # (user validation could be added here)
     return _chat_service.get_messages(chat_id)
 
 
-@app.post("/chats/{chat_id}/messages")
+@app.post("/notebooks/{chat_id}/messages")
 async def send_message(chat_id: str, query: QueryRequest, user=Depends(get_current_user)):
     # Store user message
     user_msg = ChatMessage(text=query.query, sender="user")
@@ -99,8 +100,6 @@ async def send_message(chat_id: str, query: QueryRequest, user=Depends(get_curre
         logger.error("Error fetching model_id for '%s': %s", query.model_name, exc)
 
     if not model_id:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=400, detail="Invalid or inactive model selected")
 
     ai_text = await _chat_service.generate_response(query.query, model_id)
@@ -110,10 +109,28 @@ async def send_message(chat_id: str, query: QueryRequest, user=Depends(get_curre
     return {"user_message": saved_user_msg, "bot_message": saved_bot_msg}
 
 
-@app.delete("/chats/{chat_id}")
+@app.delete("/notebooks/{chat_id}")
 async def delete_chat(chat_id: str, user=Depends(get_current_user)):
     _chat_service.delete_chat(chat_id, user["user_id"])
     return {"message": "Chat deleted successfully"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rename notebook route
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class RenameRequest(BaseModel):
+    title: str
+
+
+@app.patch("/notebooks/{chat_id}", response_model=ChatSession)
+async def rename_chat(chat_id: str, payload: RenameRequest, user=Depends(get_current_user)):
+    new_title = payload.title.strip()
+    if not new_title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+    return _chat_service.rename_chat(chat_id, user["user_id"], new_title)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

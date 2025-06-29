@@ -21,10 +21,12 @@ interface MessageListProps {
   inputValue: string;
   setInputValue: (val: string) => void;
   handleSendMessage: () => void;
+  handleStopGeneration: () => void;
   interactionDisabled: boolean;
   selectedModel: string;
   setSelectedModel: React.Dispatch<React.SetStateAction<string>>;
   models: string[];
+  runningUserMessageId: string | null;
 }
 
 export function MessageList({
@@ -39,10 +41,12 @@ export function MessageList({
   inputValue,
   setInputValue,
   handleSendMessage,
+  handleStopGeneration,
   interactionDisabled,
   selectedModel,
   setSelectedModel,
   models,
+  runningUserMessageId,
 }: MessageListProps) {
   if (isFetchingMessages && !messages.length) {
     return (
@@ -87,8 +91,10 @@ export function MessageList({
                   text={m.text}
                   editable={false}
                   interactionDisabled={isLoading}
+                  isRunning={m.id === runningUserMessageId}
                   onRun={() => handleRerunMessage(m.id, m.text)}
                   onDelete={() => handleDeleteUserPair(m.id)}
+                  onStop={m.id === runningUserMessageId ? handleStopGeneration : undefined}
                   models={models}
                 />
               ) : (

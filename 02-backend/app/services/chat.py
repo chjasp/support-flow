@@ -30,7 +30,7 @@ class ChatService:
         now = datetime.now(timezone.utc)
         chat_data = {
             "id": chat_id,
-            "title": "New Chat",
+            "title": "Untitled Notebook",
             "user_id": user_id,
             "created_at": now,
             "updated_at": now,
@@ -65,14 +65,9 @@ class ChatService:
         if not chat_doc.exists:
             return
 
-        updates = {"updated_at": message.timestamp}
-
-        data = chat_doc.to_dict()
-        if data.get("title") == "New Chat":
-            preview = (message.text[:50] + "...") if len(message.text) > 50 else message.text
-            updates["title"] = preview
-
-        chat_ref.update(updates)
+        # Only update the last-activity timestamp – the title will be handled explicitly
+        # via a dedicated rename endpoint on the frontend.
+        chat_ref.update({"updated_at": message.timestamp})
 
     def add_message(self, chat_id: str, message: ChatMessage) -> ChatMessage:
         message.id = str(uuid.uuid4())
@@ -125,4 +120,26 @@ class ChatService:
         # delete nested messages then the chat
         for msg in chat_ref.collection("messages").stream():
             msg.reference.delete()
-        chat_ref.delete() 
+        chat_ref.delete()
+
+    # ────────────────────────── Title rename helper ──────────────────────────
+    def rename_chat(self, chat_id: str, user_id: str, new_title: str) -> ChatSession:
+        """Rename a chat/notebook after validating ownership."""
+
+        from fastapi import HTTPException  # Local import to avoid circular deps
+
+        chat_ref = self.db.collection("chats").document(chat_id)
+        chat_doc = chat_ref.get()
+
+        if not chat_doc.exists:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        data = chat_doc.to_dict()
+        if data.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to rename")
+
+        now = datetime.now(timezone.utc)
+        chat_ref.update({"title": new_title, "updated_at": now})
+
+        updated = chat_ref.get().to_dict()
+        return ChatSession(**updated) 

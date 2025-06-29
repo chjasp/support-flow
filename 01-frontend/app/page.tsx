@@ -34,7 +34,12 @@ export default function HomePage() {
     setSelectedModel,
     handleDeleteUserPair,
     availableModels,
+    handleRenameChat,
+    runningUserMessageId,
   } = useChat();
+
+  const activeChat = chatList.find((c) => c.id === activeChatId);
+  const activeTitle = activeChat?.title || "Untitled Notebook";
 
   if (status === "loading") {
     return (
@@ -75,6 +80,13 @@ export default function HomePage() {
         setSelectedModel={setSelectedModel}
         handleDeleteUserPair={handleDeleteUserPair}
         availableModels={availableModels}
+        notebookTitle={activeTitle}
+        onRenameNotebook={(title: string) => {
+          if (activeChatId) {
+            handleRenameChat(activeChatId, title);
+          }
+        }}
+        runningUserMessageId={runningUserMessageId}
       />
     </div>
   );
